@@ -1,9 +1,9 @@
-//! MCP (Model Context Protocol) server: lets AI assistants (Claude, ChatGPT, …) drive Freo
+//! MCP (Model Context Protocol) server: lets AI assistants (Claude, ChatGPT, …) drive SolidWork
 //! headless over stdio. JSON-RPC 2.0, one message per line, as in the MCP stdio transport.
 //!
 //! The server holds one part model in memory. Every change goes through the same model data and
-//! regeneration engine the app uses (`model::regen`), so files saved here open unchanged in Freo.
-//! Run it with `freo-mcp` or `freo --mcp`.
+//! regeneration engine the app uses (`model::regen`), so files saved here open unchanged in SolidWork.
+//! Run it with `solidwork-mcp` or `solidwork --mcp`.
 
 use crate::kernel::math::*;
 use crate::model::features::*;
@@ -17,7 +17,7 @@ use std::path::PathBuf;
 /// Protocol revisions this server speaks, newest first.
 pub const PROTOCOL_VERSIONS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
 
-const INSTRUCTIONS: &str = "Freo is a Creo-style parametric part modeller. Units are millimetres. \
+const INSTRUCTIONS: &str = "SolidWork is a Creo-style parametric part modeller. Units are millimetres. \
 The server holds one part in memory: start with new_part or open_model, add features, then save_model / export_model. \
 World axes: Y is up. Default datum planes: VORNE/FRONT (XY plane, normal +Z), OBEN/TOP (XZ plane, normal +Y), RECHTS/RIGHT (YZ plane, normal +X). \
 Sketch coordinates (x, y) are local to the sketch plane: on TOP x→world X and y→world −Z; on FRONT x→X, y→Y; on RIGHT x→−Z, y→Y. \
@@ -436,13 +436,13 @@ impl<'a> Args<'a> {
     }
 }
 
-/// Paths relative to FREO_WORK_DIR (or the server's working directory).
+/// Paths relative to SOLIDWORK_WORK_DIR (or the server's working directory).
 fn resolve_path(p: &str) -> PathBuf {
     let p = if let Some(rest) = p.strip_prefix("~/") { std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default().join(rest) } else { PathBuf::from(p) };
     if p.is_absolute() {
         return p;
     }
-    let base = std::env::var_os("FREO_WORK_DIR").map(PathBuf::from).or_else(|| std::env::current_dir().ok()).unwrap_or_default();
+    let base = std::env::var_os("SOLIDWORK_WORK_DIR").or_else(|| std::env::var_os("FREO_WORK_DIR")).map(PathBuf::from).or_else(|| std::env::current_dir().ok()).unwrap_or_default();
     base.join(p)
 }
 
@@ -652,9 +652,9 @@ pub fn tool_list() -> Vec<Value> {
     vec![
         tool("new_part", "Start a new, empty part from the start-part template (datum planes VORNE/OBEN/RECHTS, BASIS csys, axes A_X/A_Y/A_Z). Unsaved changes to the current part are discarded.",
             json!({ "name": { "type": "string", "description": "Part name, e.g. PLATE (default PRT0001)" } }), &[]),
-        tool("open_model", "Open a Freo part (.pfprt or .json), or import a STEP/STL/OBJ file as a new part with an import feature.",
-            json!({ "path": { "type": "string", "description": "File path; relative paths resolve against FREO_WORK_DIR or the server's working directory" } }), &["path"]),
-        tool("save_model", "Save the part as a Freo part file (JSON, open it in Freo with File ▸ Open). Without a path, saves to the file it was opened from or last saved to.",
+        tool("open_model", "Open a SolidWork part (.pfprt or .json), or import a STEP/STL/OBJ file as a new part with an import feature.",
+            json!({ "path": { "type": "string", "description": "File path; relative paths resolve against SOLIDWORK_WORK_DIR or the server's working directory" } }), &["path"]),
+        tool("save_model", "Save the part as a SolidWork part file (JSON, open it in SolidWork with File ▸ Open). Without a path, saves to the file it was opened from or last saved to.",
             json!({ "path": { "type": "string", "description": "Target path, e.g. ~/Documents/plate.pfprt" } }), &[]),
         tool("get_model_info", "Name, file, units, density, parameters, feature count, volume, bounding box and regeneration errors of the current part.", json!({}), &[]),
         tool("list_features", "The model tree: every feature with id, name, type, state (suppressed, failed) and its main dimensions.", json!({}), &[]),
@@ -780,7 +780,7 @@ impl Session {
                     json!({ "opened": p, "imported": note, "model": self.brief() })
                 } else {
                     let text = std::fs::read_to_string(&p).map_err(|e| format!("{}: {}", p.display(), e))?;
-                    let d: ModelData = serde_json::from_str(&text).map_err(|e| format!("{} is not a Freo part: {}", p.display(), e))?;
+                    let d: ModelData = serde_json::from_str(&text).map_err(|e| format!("{} is not a SolidWork part: {}", p.display(), e))?;
                     self.replace(d, Some(p.clone()));
                     json!({ "opened": p, "name": self.data.name, "features": self.data.features.len(), "model": self.brief() })
                 }
@@ -1486,7 +1486,7 @@ impl Server {
                     json!({
                         "protocolVersion": version,
                         "capabilities": { "tools": { "listChanged": false }, "resources": { "listChanged": false, "subscribe": false } },
-                        "serverInfo": { "name": "freo", "title": "Freo parametric CAD", "version": env!("CARGO_PKG_VERSION") },
+                        "serverInfo": { "name": "solidwork", "title": "SolidWork parametric CAD", "version": env!("CARGO_PKG_VERSION") },
                         "instructions": INSTRUCTIONS,
                     }),
                 )
@@ -1504,16 +1504,16 @@ impl Server {
             "resources/list" => rpc_ok(
                 id,
                 json!({ "resources": [
-                { "uri": "freo://model/current", "name": "current-model", "title": "Current part (Freo JSON)", "description": "The complete part definition as saved in .pfprt files", "mimeType": "application/json" },
-                { "uri": "freo://model/features", "name": "model-tree", "title": "Model tree", "description": "Features with ids, types, states and main dimensions", "mimeType": "application/json" },
+                { "uri": "solidwork://model/current", "name": "current-model", "title": "Current part (SolidWork JSON)", "description": "The complete part definition as saved in .pfprt files", "mimeType": "application/json" },
+                { "uri": "solidwork://model/features", "name": "model-tree", "title": "Model tree", "description": "Features with ids, types, states and main dimensions", "mimeType": "application/json" },
             ] }),
             ),
             "resources/templates/list" => rpc_ok(id, json!({ "resourceTemplates": [] })),
             "resources/read" => {
                 let uri = params.get("uri").and_then(Value::as_str).unwrap_or("");
                 let text = match uri {
-                    "freo://model/current" => serde_json::to_string_pretty(&self.session.data).unwrap_or_default(),
-                    "freo://model/features" => match self.session.call("list_features", &Map::new()) {
+                    "solidwork://model/current" | "freo://model/current" => serde_json::to_string_pretty(&self.session.data).unwrap_or_default(),
+                    "solidwork://model/features" | "freo://model/features" => match self.session.call("list_features", &Map::new()) {
                         Ok(o) => serde_json::to_string_pretty(&o.value).unwrap_or_default(),
                         Err(e) => e,
                     },

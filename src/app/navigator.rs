@@ -549,7 +549,7 @@ impl App {
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             if entries.is_empty() {
-                ui.label(RichText::new("Keine Ordner oder Freo-Modelle hier").color(LABEL));
+                ui.label(RichText::new("Keine Ordner oder SolidWork-Modelle hier").color(LABEL));
             }
             for (name, is_dir, path) in entries {
                 let icon = if is_dir {

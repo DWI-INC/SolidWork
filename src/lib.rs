@@ -1,4 +1,4 @@
-//! Freo — a Creo-style parametric CAD modeller.
+//! SolidWork — a Creo-style parametric CAD modeller.
 pub mod app;
 pub mod cam;
 pub mod icon;

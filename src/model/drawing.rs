@@ -683,7 +683,7 @@ impl DrawingData {
             decimals: 2,
             text_height: 3.5,
             title: model_name.into(),
-            company: "FREO".into(),
+            company: "SolidWork".into(),
             drawn_by: String::new(),
             material: String::new(),
             date: today(),

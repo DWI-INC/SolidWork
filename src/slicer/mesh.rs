@@ -9,7 +9,7 @@ pub struct Mesh {
     pub t: Vec<[u32; 3]>,
 }
 
-/// Freo's world (Y up, Z towards the viewer) to the printer frame (Z up): x → x,
+/// SolidWork's world (Y up, Z towards the viewer) to the printer frame (Z up): x → x,
 /// −z → y, y → z. A proper rotation, so the part is not mirrored.
 pub fn world_to_printer(p: DVec3) -> DVec3 {
     DVec3::new(p.x, -p.z, p.y)

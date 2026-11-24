@@ -1,4 +1,4 @@
-//! CNC: 3-axis machining of Freo parts. Toolpaths are generated from the part (facing,
+//! CNC: 3-axis machining of SolidWork parts. Toolpaths are generated from the part (facing,
 //! drilling, roughing, contour finishing, 3D finishing), then an independent simulation
 //! removes the material move by move with the real tool shapes and checks every move for
 //! crashes (rapids into material, holder and shank collisions, cuts into the part or the

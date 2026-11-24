@@ -1,17 +1,17 @@
 ---
-name: freo-cad
-description: Design precise mechanical parts in Freo, a Creo-style parametric CAD app, through the tools of its `freo` MCP server. Builds dimensioned parts from datum planes, sketches, extrudes, revolves, holes, rounds, chamfers, shells and patterns; checks volume and mass; renders previews; saves .pfprt parts and exports STL/3MF for 3D printing or STEP for other CAD. Use for brackets, plates, enclosures, spacers, flanges, mounts, adapters and any part with exact millimetre dimensions or that must be printed, machined or fitted. Prefer Blender for organic, sculpted or purely visual models.
+name: solidwork-cad
+description: Design precise mechanical parts in SolidWork, a Creo-style parametric CAD app, through the tools of its `solidwork` MCP server. Builds dimensioned parts from datum planes, sketches, extrudes, revolves, holes, rounds, chamfers, shells and patterns; checks volume and mass; renders previews; saves .pfprt parts and exports STL/3MF for 3D printing or STEP for other CAD. Use for brackets, plates, enclosures, spacers, flanges, mounts, adapters and any part with exact millimetre dimensions or that must be printed, machined or fitted. Prefer Blender for organic, sculpted or purely visual models.
 version: 1.0.0
-metadata: {"openclaw":{"emoji":"📐","os":["darwin"],"requires":{"config":["mcp.servers.freo"]}}}
+metadata: {"openclaw":{"emoji":"📐","os":["darwin"],"requires":{"config":["mcp.servers.solidwork"]}}}
 ---
 
-# Freo CAD
+# SolidWork CAD
 
-Freo is a parametric, history-based modeller (like PTC Creo). You drive it through the
-`freo` MCP server: every call edits one part held in memory, regenerates it and answers
+SolidWork is a parametric, history-based modeller (like PTC Creo). You drive it through the
+`solidwork` MCP server: every call edits one part held in memory, regenerates it and answers
 with the part's volume, bounding box and errors. Units are **millimetres**.
 
-Freo vs Blender: use Freo when dimensions matter (fits, holes, wall thickness, print or
+SolidWork vs Blender: use SolidWork when dimensions matter (fits, holes, wall thickness, print or
 machining files, STEP for engineers). Use Blender for organic shapes, scenes and renders.
 
 ## 1. Plan before calling tools
@@ -25,7 +25,7 @@ Write down, before the first call:
 3. **Driving dimensions as parameters** when the user may change them
    (`set_parameters {"W": 120, "T": 8}`, then `"depth": "T"`).
 4. **Project folder**: `<slug>/` inside the deliverables folder (the server's
-   `FREO_WORK_DIR`, `/Users/Open-Claw/06_3D_Models`). Use relative paths like
+   `SOLIDWORK_WORK_DIR`, `/Users/Open-Claw/06_3D_Models`). Use relative paths like
    `bracket-m6/bracket-m6.pfprt`; they resolve there.
 
 ## 2. Coordinates you must get right
@@ -103,14 +103,14 @@ is mirrored or rotated. Iterate until it is right; never deliver a part you have
 ## 6. Deliver
 
 ```text
-save_model    {"path": "<slug>/<slug>.pfprt"}           # editable Freo part (opens in Freo.app)
+save_model    {"path": "<slug>/<slug>.pfprt"}           # editable SolidWork part (opens in SolidWork.app)
 export_model  {"path": "<slug>/export/<slug>.stl"}      # 3D printing (or .3mf)
 export_model  {"path": "<slug>/export/<slug>.step"}     # other CAD tools
 ```
 
 Reply with: a one-line description, key dimensions, volume and mass, the preview image
 (send the PNG file from `renders/`), and the exact absolute paths the tools returned.
-Mention that the `.pfprt` opens in Freo for further editing.
+Mention that the `.pfprt` opens in SolidWork for further editing.
 
 ## Limits
 

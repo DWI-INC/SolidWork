@@ -158,9 +158,9 @@ fn export_dialog_and_drawings() {
 
 #[test]
 fn new_models_are_saved_into_the_working_directory() {
-    let work = dir("work").join("freo-work");
+    let work = dir("work").join("solidwork-work");
     let mut app = App::new(None);
-    assert!(app.work_dir.ends_with("freo-work"), "default Arbeitsverzeichnis is freo-work");
+    assert_eq!(app.work_dir, freo::app::default_work_dir());
     app.work_dir = work.clone();
     // part: Speichern of a new model needs no dialog and creates the folder
     app.new_part_named("HALTER");

@@ -1,6 +1,6 @@
-# Freo — Creo-style parametric CAD for macOS, Linux and Windows (Rust)
+# SolidWork — Creo-style parametric CAD for macOS, Linux and Windows (Rust)
 
-Freo is a native, history-based parametric 3D modeller for macOS, Linux and Windows that follows the PTC Creo
+SolidWork is a native, history-based parametric 3D modeller for macOS, Linux and Windows that follows the PTC Creo
 Parametric 10 workflow and look, with Creo's German user interface: ribbon → feature tab →
 sketcher → regenerate. It has a model tree, datum features, parameters and relations,
 assemblies built from placement constraints, associative 2D drawings, 3D annotations, a
@@ -10,7 +10,7 @@ designer and an MCP server for AI assistants.
 It is written entirely in Rust: its own geometry kernel, constraint solvers, hidden-line
 removal, simulation solvers, STEP reader and OpenGL viewport on egui/eframe.
 
-![Freo workspace](docs/screens/bracket.png)
+![SolidWork workspace](docs/screens/bracket.png)
 
 | Sketching in 3D (weak + strong dimensions) | Skizzierer-Palette | Extrude tab with Options panel |
 |---|---|---|
@@ -74,27 +74,27 @@ the German label where it helps to find the command.
 
 ## Download
 
-Ready-made builds are on the [releases page](https://github.com/999david7/freo/releases):
+When published, installers are available from the [releases page](https://github.com/DWI-INC/SolidWork/releases):
 
 | System | File | Install |
 |---|---|---|
-| **macOS**, Apple Silicon | `Freo-<version>-macos-arm64.dmg` | Open it and drag `Freo.app` to Applications |
-| **macOS**, Intel | `Freo-<version>-macos-x64.dmg` | Open it and drag `Freo.app` to Applications |
-| **Windows**, x64 | `Freo-<version>-windows-x64-setup.exe` | Run the installer (Start menu, desktop icon, file types, uninstaller) |
-| **Windows**, ARM64 | `Freo-<version>-windows-arm64-setup.exe` | Run the installer |
-| **Windows**, 32-bit | `Freo-<version>-windows-x86-setup.exe` | Run the installer |
-| **Ubuntu / Debian** | `freo_<version>_amd64.deb`, `freo_<version>_arm64.deb` | `sudo apt install ./freo_<version>_amd64.deb` |
-| **Fedora / openSUSE / RHEL** | `freo-<version>-1.x86_64.rpm`, `freo-<version>-1.aarch64.rpm` | `sudo dnf install ./freo-<version>-1.x86_64.rpm` |
-| **Linux** | `Freo-<version>-x86_64.AppImage`, `Freo-<version>-aarch64.AppImage` | `chmod +x` the file and start it |
+| **macOS**, Apple Silicon | `SolidWork-<version>-macos-arm64.dmg` | Open it and drag `SolidWork.app` to Applications |
+| **macOS**, Intel | `SolidWork-<version>-macos-x64.dmg` | Open it and drag `SolidWork.app` to Applications |
+| **Windows**, x64 | `SolidWork-<version>-windows-x64-setup.exe` | Run the installer (Start menu, desktop icon, file types, uninstaller) |
+| **Windows**, ARM64 | `SolidWork-<version>-windows-arm64-setup.exe` | Run the installer |
+| **Windows**, 32-bit | `SolidWork-<version>-windows-x86-setup.exe` | Run the installer |
+| **Ubuntu / Debian** | `solidwork_<version>_amd64.deb`, `solidwork_<version>_arm64.deb` | `sudo apt install ./solidwork_<version>_amd64.deb` |
+| **Fedora / openSUSE / RHEL** | `solidwork-<version>-1.x86_64.rpm`, `solidwork-<version>-1.aarch64.rpm` | `sudo dnf install ./solidwork-<version>-1.x86_64.rpm` |
+| **Linux** | `SolidWork-<version>-x86_64.AppImage`, `SolidWork-<version>-aarch64.AppImage` | `chmod +x` the file and start it |
 
-The `.tar.gz` (Linux, macOS) and `.zip` (Windows) files hold the bare programs `freo` and
-`freo-mcp` without an installer; on Windows `Freo-<version>-windows-<arch>.exe` is the app as a single file.
+The `.tar.gz` (Linux, macOS) and `.zip` (Windows) files hold the bare programs `solidwork` and
+`solidwork-mcp` without an installer; on Windows `SolidWork-<version>-windows-<arch>.exe` is the app as a single file.
 
 - **macOS**: the app is not notarised; on first start choose **Open Anyway** in System Settings > Privacy & Security.
 - **Windows**: the programs are not signed; SmartScreen asks once (**More info** > **Run anyway**).
 - **Linux**: Ubuntu 22.04 or newer, or a distribution of the same age. The AppImage uses the system's graphics libraries.
 
-Freo is developed on macOS. The Linux builds are compiled, tested and started once on Ubuntu
+SolidWork is developed on macOS. The Linux builds are compiled, tested and started once on Ubuntu
 for every release; the Windows builds are compiled on Windows, where the x64 build runs the test suite.
 
 ## Build & run
@@ -105,42 +105,43 @@ Requires a current stable Rust toolchain, on macOS 11 or later, on Linux (X11 or
 cargo run --release
 ```
 
-Build a double-clickable `Freo.app` (with icon and document types) in the project root:
+Build a double-clickable `SolidWork.app` (with icon and document types) in the project root:
 
 ```bash
 ./scripts/bundle.sh
 ```
 
-Copy `Freo.app` to `/Applications` to install it. The bundle is not notarised; after copying,
+Copy `SolidWork.app` to `/Applications` to install it. The bundle is not notarised; after copying,
 sign it ad hoc so macOS starts it:
 
 ```bash
-codesign --force --deep -s - /Applications/Freo.app
+codesign --force --deep -s - /Applications/SolidWork.app
 ```
 
 On Linux, `scripts/package-linux.sh` packs the release build into a `.deb`, an `.rpm`, an
 AppImage and a `.tar.gz` in `dist/`. The release workflow in `.github/workflows/release.yml`
 builds the files for x86-64 and ARM64 on all three systems, plus 32-bit x86 on Windows.
 
-Open a model directly with `freo part.pfprt` / `freo asm0001.pfasm`, from Finder, or by
+Open a model directly with `solidwork part.pfprt` / `solidwork asm0001.pfasm`, from Finder, or by
 dragging a file onto the window (a part dropped onto an open assembly is assembled).
 
 ## AI assistants (MCP)
 
-Freo ships an [MCP](https://modelcontextprotocol.io) server, so Claude, ChatGPT and other
+SolidWork ships an [MCP](https://modelcontextprotocol.io) server, so Claude, ChatGPT and other
 MCP clients can build and edit parts. It runs headless over stdio (JSON-RPC 2.0) on the
 same model, regeneration and export code as the app, and keeps one part in memory per session.
 
 ```bash
-cargo build --release --bin freo-mcp      # → target/release/freo-mcp
+cargo build --release --bin solidwork-mcp      # → target/release/solidwork-mcp
 ```
 
-The app binary serves the same thing with `freo --mcp` (in the bundle:
-`Freo.app/Contents/MacOS/freo --mcp`). Relative file paths in tool calls resolve against
-`FREO_WORK_DIR`, or the server's working directory if that is not set. Pointing it at
-`~/Documents/freo-work`, the app's default work folder, makes parts saved by an assistant show
-up in Freo's Startseite. With `Freo.app` installed, `command` can also be
-`/Applications/Freo.app/Contents/MacOS/freo` with `args: ["--mcp"]`.
+The app binary serves the same thing with `solidwork --mcp` (in the bundle:
+`SolidWork.app/Contents/MacOS/solidwork --mcp`). Relative file paths in tool calls resolve against
+`SOLIDWORK_WORK_DIR`, or the server's working directory if that is not set. Pointing it at
+`~/Documents/solidwork-work`, the default work folder on a new installation, makes parts saved by an assistant show
+up in SolidWork's Startseite. Existing installations can keep using `~/Documents/freo-work`
+and the `FREO_WORK_DIR` environment variable. With `SolidWork.app` installed, `command` can also be
+`/Applications/SolidWork.app/Contents/MacOS/solidwork` with `args: ["--mcp"]`.
 
 **Tools:** `new_part`, `open_model` (`.pfprt`, or STEP/STL/OBJ as an import), `save_model`,
 `get_model_info`, `list_features`, `get_feature`, `list_geometry` (faces, edges, datums),
@@ -149,8 +150,8 @@ up in Freo's Startseite. With `Freo.app` installed, `command` can also be
 `suppress_features`, `resume_features`, `delete_features`, `set_parameters`, `set_relations`,
 `set_model_properties`, `regenerate`, `undo`, `mass_properties`, `export_model`
 (STL, OBJ, STEP, 3MF, PLY, VRML, glTF), `import_geometry` and `render_png` (returns a shaded
-picture of the part). Resources: `freo://model/current` (the part as JSON) and
-`freo://model/features` (the model tree).
+picture of the part). Resources: `solidwork://model/current` (the part as JSON) and
+`solidwork://model/features` (the model tree).
 
 Every change regenerates the part and returns its volume, bounding box and errors. A change
 that makes a feature fail is rolled back and comes back as a tool error. Planes are named
@@ -167,9 +168,9 @@ can discard unsaved work or overwrite files: `new_part`, `open_model`, `save_mod
 ```json
 {
   "mcpServers": {
-    "freo": {
-      "command": "/path/to/Creo-for-mac/target/release/freo-mcp",
-      "env": { "FREO_WORK_DIR": "/Users/you/Documents/freo-work" }
+    "solidwork": {
+      "command": "/path/to/SolidWork/target/release/solidwork-mcp",
+      "env": { "SOLIDWORK_WORK_DIR": "/Users/you/Documents/solidwork-work" }
     }
   }
 }
@@ -178,7 +179,7 @@ can discard unsaved work or overwrite files: `new_part`, `open_model`, `save_mod
 **Claude Code:**
 
 ```bash
-claude mcp add freo --scope user -e FREO_WORK_DIR=$HOME/Documents/freo-work -- /path/to/Creo-for-mac/target/release/freo-mcp
+claude mcp add solidwork --scope user -e SOLIDWORK_WORK_DIR=$HOME/Documents/solidwork-work -- /path/to/SolidWork/target/release/solidwork-mcp
 ```
 
 Then ask, for example: *"Build a 100 × 60 × 10 mm aluminium plate with a 10 mm through hole
@@ -189,13 +190,13 @@ Cursor, VS Code, Windsurf, Zed …) use the same command. In Codex, for example,
 `~/.codex/config.toml`:
 
 ```toml
-[mcp_servers.freo]
-command = "/path/to/Creo-for-mac/target/release/freo-mcp"
+[mcp_servers.solidwork]
+command = "/path/to/SolidWork/target/release/solidwork-mcp"
 ```
 
 ChatGPT itself (connectors in developer mode) only talks to remote MCP servers over HTTPS. To
-use Freo there, put a stdio-to-HTTP bridge in front of `freo-mcp` (for example
-`npx -y supergateway --stdio /path/to/freo-mcp --port 8000`) and expose it with a tunnel.
+use SolidWork there, put a stdio-to-HTTP bridge in front of `solidwork-mcp` (for example
+`npx -y supergateway --stdio /path/to/solidwork-mcp --port 8000`) and expose it with a tunnel.
 That makes the server, and the files it can read and write, reachable from the internet, so
 only do it on a machine and work directory you are fine sharing.
 
@@ -204,16 +205,16 @@ running, the CLI needs operator access to it; otherwise quit OpenClaw first so t
 can change the config offline.
 
 ```bash
-openclaw mcp add freo --command /Applications/Freo.app/Contents/MacOS/freo --arg=--mcp \
-  --env FREO_WORK_DIR=$HOME/Documents/freo-work --timeout 120
+openclaw mcp add solidwork --command /Applications/SolidWork.app/Contents/MacOS/solidwork --arg=--mcp \
+  --env SOLIDWORK_WORK_DIR=$HOME/Documents/solidwork-work --timeout 120
 ```
 
-[`integrations/openclaw/freo-cad/SKILL.md`](integrations/openclaw/freo-cad/SKILL.md) is an
-OpenClaw skill that teaches an agent the Freo workflow: planning, plane coordinates, tool
+[`integrations/openclaw/solidwork-cad/SKILL.md`](integrations/openclaw/solidwork-cad/SKILL.md) is an
+OpenClaw skill that teaches an agent the SolidWork workflow: planning, plane coordinates, tool
 recipes, checking volumes, looking at renders, and sending back renders and export paths.
-Copy the `freo-cad` folder into an agent's `<workspace>/skills/` (or `~/.openclaw/skills/`
-for all agents). It only shows up once `mcp.servers.freo` is configured. Check it with
-`openclaw skills info freo-cad --agent <id>`.
+Copy the `solidwork-cad` folder into an agent's `<workspace>/skills/` (or `~/.openclaw/skills/`
+for all agents). It only shows up once `mcp.servers.solidwork` is configured. Check it with
+`openclaw skills info solidwork-cad --agent <id>`.
 
 ## New in 1.3.0
 
@@ -223,14 +224,14 @@ for all agents). It only shows up once `mcp.servers.freo` is configured. Check i
   - **Libraries and editors**: about 60 footprints with KiCad names (the USB, RJ45, DC and audio jacks match the sketch palette's "Ports" openings for the enclosure), KiCad symbol (`.kicad_sym`) and footprint (`.pretty`) libraries can be loaded, a symbol editor (pin table → IC box) and a footprint editor (chip, SOIC, QFP/QFN and through-hole generators or a pad table), export of the project libraries
   - **Outputs**: Gerber RS-274X with X2 attributes for all layers and a stroke-font silkscreen, Excellon drill files with routed slots, Gerber job file, pick-and-place files, IPC-2581, BOM (CSV)
   - **KiCad files**: `.kicad_sch` (with sub-sheets), `.kicad_pcb` and `.kicad_pro` are read and written; KiCad's own demo projects load with every pad on the same net as in KiCad
-  - **3D**: the board becomes a Freo assembly (laminate with all drills, copper, components) ready for enclosure design. Components get detailed generated models (gull-wing leads, terminations, leads through the board, resistor colour bands from the value, LED domes, electrolytic cans, pin headers, connector shells) in their real colours, or the KiCad STEP model when it is installed
+  - **3D**: the board becomes a SolidWork assembly (laminate with all drills, copper, components) ready for enclosure design. Components get detailed generated models (gull-wing leads, terminations, leads through the board, resistor colour bands from the value, LED domes, electrolytic cans, pin headers, connector shells) in their real colours, or the KiCad STEP model when it is installed
 - **Idee**: freehand idea pages (`.prti`) with pencil strokes and placed PNG/JPEG images, from Datei ▸ Neu ▸ Idee
 - **Calculations in value boxes**: dashboards accept arithmetic such as `10-7` or `(10+2)/3` and calculate it on Enter, while relations like `HEIGHT-7` stay formulas
 - **Kernel**: faces with many holes no longer show stray edges between the holes, and the face triangulation is more robust (cleans up, cures self-touching bridges and splits along a diagonal instead of guessing)
 
 ## New in 1.2.0
 
-- **2D drawing to 3D part**: open a **DXF** (or **DWG** with LibreDWG or the ODA File Converter installed) and Freo builds the part from its views. Front, top and side views are found by their alignment (the isometric view, frame, title block, dimensions and centre lines are skipped), European or American projection from where the top view lies, the scale from the dimensions or the title block. The part is made of editable features: the top view's outline extruded, everything outside the front and side outlines cut away, holes and pockets cut over the depth their hidden lines show, round bosses shaped. Circles and arcs stay true circles and arcs with exact sizes; a single view becomes a plate (thickness from a "t=5" note). A dialog shows what was found and rebuilds with another projection, scale or thickness
+- **2D drawing to 3D part**: open a **DXF** (or **DWG** with LibreDWG or the ODA File Converter installed) and SolidWork builds the part from its views. Front, top and side views are found by their alignment (the isometric view, frame, title block, dimensions and centre lines are skipped), European or American projection from where the top view lies, the scale from the dimensions or the title block. The part is made of editable features: the top view's outline extruded, everything outside the front and side outlines cut away, holes and pockets cut over the depth their hidden lines show, round bosses shaped. Circles and arcs stay true circles and arcs with exact sizes; a single view becomes a plate (thickness from a "t=5" note). A dialog shows what was found and rebuilds with another projection, scale or thickness
 - **3D printing (Werkzeuge ▸ Manufacture ▸ Slicer)**: printer, filament and print profile, orient and arrange on the bed, supports, brim and skirt, slicing with a layer preview, G-code export
 - **CNC milling (Werkzeuge ▸ Manufacture ▸ CNC)**: machine, material, stock and zero point; facing, drilling, roughing, contour and 3D finishing; a simulation that removes the material move by move and checks every move for crashes, gouges, holder and table collisions; NC code for Haas/Fanuc-style controls and GRBL. Holes without a matching drill are bored with a helix, curves are cut as G2/G3 arcs, the cutter is clamped as long as tall walls need, and 3D finishing only runs over sloped and curved faces
 - **Round, chamfer and hole dashboards like Creo 10**: round sets with Kreisförmig / Konisch / C2 / D1×D2 sections and conic parameter, Vollrundung, Durch Kurve, Sehne, Flächen verlängern, rolling ball or normal to spine, spherical corner transitions, pieces and surface rounds; chamfers D×D, D1×D2, angle×D, 45×D, O×O and O1×O2 with offset-surface or tangent distances, value or reference, corner-chamfer transitions; holes with flat, drill-point or sketched profiles, Variabel / Symmetrisch / Bis zur nächsten / Durch alle / Bis zur ausgewählten, linear, radial, diameter, coaxial and on-point placement, orientation, hole note and lightweight holes; Pause, preview modes and verification in every dashboard
@@ -240,7 +241,7 @@ for all agents). It only shows up once `mcp.servers.freo` is configured. Check i
 
 ## New in 1.1.0
 
-Small things that got in the way, found by using Freo like a student would:
+Small things that got in the way, found by using SolidWork like a student would:
 
 - **Safer**: deleting a feature asks first and lists the child features that go with it (including sketches on its faces and rounds on its edges, which used to be left behind and fail); Abbrechen or Esc on a sketch or feature with work in it asks before throwing it away; closing the window asks **Speichern / Nicht speichern / Abbrechen**
 - **Typing values**: dimension boxes, renaming in the tree, the Neu dialog and Save As open with the text selected, so typing replaces it; clicking away keeps a changed value; Enter and Esc work in the Neu dialog
@@ -345,7 +346,7 @@ Small things that got in the way, found by using Freo like a student would:
 - Native `.pfprt` / `.pfasm` / `.pfdrw` (JSON with the full history; a drawing also embeds its model)
 - **Import**: STEP AP203 / AP214 / AP242 (B-rep with analytic and B-spline surfaces, tessellated; assemblies are flattened), STL and OBJ, opened as a part or inserted into a part as an import feature
 - **Export**: STEP AP214 (faceted B-rep, one body per component), STL (binary/ASCII), OBJ, PLY, VRML 2.0, glTF 2.0 and 3MF
-- Native Creo files (`.prt`, `.asm`, `.drw`, with or without version number) are recognised and listed, but their geometry is in PTC's closed format and cannot be read; Freo explains this and points to a STEP export of the same model
+- Native Creo files (`.prt`, `.asm`, `.drw`, with or without version number) are recognised and listed, but their geometry is in PTC's closed format and cannot be read; SolidWork explains this and points to a STEP export of the same model
 
 ## Controls
 
@@ -414,7 +415,7 @@ FREO_DEMO=sketch FREO_DEMO_POPUP=palette:8 FREO_SHOT=palette.png FREO_EXIT=1 car
 
 ## Scope compared with Creo
 
-Freo reimplements the core part-modelling, assembly, drawing, annotation and live-simulation
+SolidWork reimplements the core part-modelling, assembly, drawing, annotation and live-simulation
 workflow. It does not include Creo's sheet metal, mechanisms, mould and weld applications or
 flexible modelling; the Flexible Modellierung tab and some Anwendungen and HTL commands are
 shown greyed out. Native Creo files cannot be read (use STEP).
@@ -424,5 +425,5 @@ imported STEP geometry is a tessellated import feature, and drawing views of cur
 show their facets' silhouettes, rather than an exact NURBS B-rep. Live-Simulation works on a
 voxel mesh and is meant for quick design feedback, not for certification.
 
-Freo is MIT-licensed (see `Cargo.toml`). "Creo" is a trademark of PTC Inc.; Freo is an independent
+SolidWork is MIT-licensed (see `Cargo.toml`). "Creo" is a trademark of PTC Inc.; SolidWork is an independent
 project and is not affiliated with PTC.

@@ -1,4 +1,4 @@
-//! The board as Freo geometry: the laminate as a real extrude (outline sketch with the drill
+//! The board as SolidWork geometry: the laminate as a real extrude (outline sketch with the drill
 //! holes) so enclosures can reference its faces, plus copper and the component bodies as
 //! import features; together as an assembly for enclosure design.
 //!
@@ -240,7 +240,7 @@ pub fn component_meshes(b: &Board) -> Vec<(super::model3d::Mat, Vec<ImportFace>)
 /// Component bodies as one import feature (all materials together).
 pub fn parts_import(b: &Board) -> ImportDef {
     let faces = component_meshes(b).into_iter().flat_map(|x| x.1).collect();
-    ImportDef { source: "Leiterplatte (Bauteile)".into(), format: "Freo-PCB".into(), faces }
+    ImportDef { source: "Leiterplatte (Bauteile)".into(), format: "SolidWork-PCB".into(), faces }
 }
 
 /// Outer copper (pads and tracks on top and bottom) as one import feature.
@@ -270,7 +270,7 @@ pub fn copper_import(b: &Board) -> ImportDef {
             let _ = y0;
         }
     }
-    ImportDef { source: "Leiterplatte (Kupfer)".into(), format: "Freo-PCB".into(), faces: m.faces }
+    ImportDef { source: "Leiterplatte (Kupfer)".into(), format: "SolidWork-PCB".into(), faces: m.faces }
 }
 
 fn import_part(name: &str, def: ImportDef, color: [f32; 3]) -> ModelData {
@@ -293,7 +293,7 @@ pub fn assembly(b: &Board, name: &str) -> Result<AssemblyData, String> {
     mats.sort_by_key(|x| x.0);
     let parts: Vec<ModelData> = mats
         .into_iter()
-        .map(|(mat, faces)| import_part(&format!("{}_{}", base, mat.name()), ImportDef { source: format!("Leiterplatte (Bauteile, {})", mat.name().to_lowercase()), format: "Freo-PCB".into(), faces }, mat.rgb()))
+        .map(|(mat, faces)| import_part(&format!("{}_{}", base, mat.name()), ImportDef { source: format!("Leiterplatte (Bauteile, {})", mat.name().to_lowercase()), format: "SolidWork-PCB".into(), faces }, mat.rgb()))
         .collect();
     let mut asm = AssemblyData::new(&format!("{}_ASM", base));
     let mut id = 100;

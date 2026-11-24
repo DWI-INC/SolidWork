@@ -1,4 +1,4 @@
-//! 3D-Druck: a complete FDM slicer for Freo parts, written in Rust. The part is placed on
+//! 3D-Druck: a complete FDM slicer for SolidWork parts, written in Rust. The part is placed on
 //! the printer's bed, cut into layers, filled with walls, shells, infill and support, and
 //! written as G-code for Klipper, Marlin, RepRapFirmware or Bambu printers.
 

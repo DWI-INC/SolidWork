@@ -240,6 +240,7 @@ pub struct Windows {
 }
 
 pub struct App {
+    brand_icon: Option<egui::TextureHandle>,
     pub idea: Option<idea::IdeaSession>,
     pub data: ModelData,
     pub result: RegenResult,
@@ -301,7 +302,7 @@ pub struct App {
     pub show_nav: bool,
     pub nav_tab: NavTab,
     pub browser_dir: PathBuf,
-    /// Arbeitsverzeichnis: where new files are saved (~/Documents/freo-work, like Creo's Creo10_Work)
+    /// Arbeitsverzeichnis: where new files are saved
     pub work_dir: PathBuf,
     pub expanded: HashSet<u64>,
     pub tree_hover: Option<u64>,
@@ -341,6 +342,7 @@ impl App {
         let data = ModelData::new_part("PRT0001");
         let result = regen::run(&data);
         let mut app = App {
+            brand_icon: None,
             data,
             result,
             context: None,
@@ -355,7 +357,7 @@ impl App {
             d2_import: None,
             resetup: None,
             reorient: None,
-            messages: vec![Message { text: "Willkommen bei Freo. Eine Bezugsebene wählen, dann mit Skizze oder Profil beginnen.".into(), kind: MsgKind::Info, failed: None }],
+            messages: vec![Message { text: "Willkommen bei SolidWork. Eine Bezugsebene wählen, dann mit Skizze oder Profil beginnen.".into(), kind: MsgKind::Info, failed: None }],
             style: Style::ShadedEdges,
             show_planes: true,
             show_axes: true,
@@ -2139,15 +2141,14 @@ impl App {
     }
 }
 
-/// ~/Documents/freo-work (or ~/freo-work without a Documents folder).
+/// Prefer the SolidWork folder, reusing an existing Freo workspace on upgrade.
 pub fn default_work_dir() -> PathBuf {
     let home = std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("/tmp"));
     let docs = home.join("Documents");
-    if docs.is_dir() {
-        docs.join("freo-work")
-    } else {
-        home.join("freo-work")
-    }
+    let base = if docs.is_dir() { docs } else { home };
+    let current = base.join("solidwork-work");
+    let legacy = base.join("freo-work");
+    if !current.exists() && legacy.is_dir() { legacy } else { current }
 }
 
 impl App {
@@ -2161,7 +2162,7 @@ impl App {
 
     /// Where Speichern writes: the model's file, or — for a new model — straight into the
     /// Arbeitsverzeichnis like Creo (asking before replacing an existing file). Otherwise
-    /// (Speichern unter, or the user keeps the existing file) Freo's own "Speichern unter"
+    /// (Speichern unter, or the user keeps the existing file) SolidWork's own "Speichern unter"
     /// explorer opens and finishes the save itself; then this returns None.
     pub fn save_target(&mut self, current: Option<&PathBuf>, save_as: bool, file_name: &str, kind: creo::SaveKind) -> Option<PathBuf> {
         if !save_as {

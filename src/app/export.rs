@@ -169,7 +169,7 @@ pub fn write(r: &RegenResult, data: &ModelData, fmt: Format, path: &Path) -> Res
         }
         Format::StlBinary => {
             let mut header = [0u8; 80];
-            let name = format!("Freo {}", data.name);
+            let name = format!("SolidWork {}", data.name);
             header[..name.len().min(80)].copy_from_slice(&name.as_bytes()[..name.len().min(80)]);
             f.write_all(&header).map_err(e)?;
             f.write_all(&(tris.len() as u32).to_le_bytes()).map_err(e)?;
@@ -197,7 +197,7 @@ pub fn write(r: &RegenResult, data: &ModelData, fmt: Format, path: &Path) -> Res
         }
         Format::Ply => {
             let (pos, tri) = indexed(r);
-            write!(f, "ply\nformat binary_little_endian 1.0\ncomment Freo export of {}, units mm\nelement vertex {}\nproperty float x\nproperty float y\nproperty float z\nelement face {}\nproperty list uchar int vertex_indices\nend_header\n", data.name, pos.len(), tri.len()).map_err(e)?;
+            write!(f, "ply\nformat binary_little_endian 1.0\ncomment SolidWork export of {}, units mm\nelement vertex {}\nproperty float x\nproperty float y\nproperty float z\nelement face {}\nproperty list uchar int vertex_indices\nend_header\n", data.name, pos.len(), tri.len()).map_err(e)?;
             for p in &pos {
                 for c in [p.x as f32, p.y as f32, p.z as f32] {
                     f.write_all(&c.to_le_bytes()).map_err(e)?;
@@ -213,7 +213,7 @@ pub fn write(r: &RegenResult, data: &ModelData, fmt: Format, path: &Path) -> Res
         Format::Vrml => {
             let (pos, tri) = indexed(r);
             let c = data.appearance.color;
-            writeln!(f, "#VRML V2.0 utf8\n# Freo export of {} (mm)\nShape {{\n  appearance Appearance {{ material Material {{ diffuseColor {} {} {} }} }}\n  geometry IndexedFaceSet {{\n    solid TRUE\n    creaseAngle 0.5\n    coord Coordinate {{ point [", data.name, c[0], c[1], c[2]).map_err(e)?;
+            writeln!(f, "#VRML V2.0 utf8\n# SolidWork export of {} (mm)\nShape {{\n  appearance Appearance {{ material Material {{ diffuseColor {} {} {} }} }}\n  geometry IndexedFaceSet {{\n    solid TRUE\n    creaseAngle 0.5\n    coord Coordinate {{ point [", data.name, c[0], c[1], c[2]).map_err(e)?;
             for p in &pos {
                 writeln!(f, "      {} {} {},", p.x, p.y, p.z).map_err(e)?;
             }
@@ -252,7 +252,7 @@ pub fn write(r: &RegenResult, data: &ModelData, fmt: Format, path: &Path) -> Res
             let c = data.appearance.color;
             let count = tris.len() * 3;
             let json = format!(
-                r#"{{"asset":{{"version":"2.0","generator":"Freo"}},"scene":0,"scenes":[{{"nodes":[0]}}],"nodes":[{{"mesh":0,"name":"{name}"}}],"meshes":[{{"name":"{name}","primitives":[{{"attributes":{{"POSITION":0,"NORMAL":1}},"material":0}}]}}],"materials":[{{"name":"{name}","pbrMetallicRoughness":{{"baseColorFactor":[{r},{g},{b},1.0],"metallicFactor":0.3,"roughnessFactor":0.5}}}}],"buffers":[{{"byteLength":{len},"uri":"data:application/octet-stream;base64,{data}"}}],"bufferViews":[{{"buffer":0,"byteOffset":0,"byteLength":{npos},"target":34962}},{{"buffer":0,"byteOffset":{npos},"byteLength":{nn},"target":34962}}],"accessors":[{{"bufferView":0,"componentType":5126,"count":{count},"type":"VEC3","min":[{x0},{y0},{z0}],"max":[{x1},{y1},{z1}]}},{{"bufferView":1,"componentType":5126,"count":{count},"type":"VEC3"}}]}}"#,
+                r#"{{"asset":{{"version":"2.0","generator":"SolidWork"}},"scene":0,"scenes":[{{"nodes":[0]}}],"nodes":[{{"mesh":0,"name":"{name}"}}],"meshes":[{{"name":"{name}","primitives":[{{"attributes":{{"POSITION":0,"NORMAL":1}},"material":0}}]}}],"materials":[{{"name":"{name}","pbrMetallicRoughness":{{"baseColorFactor":[{r},{g},{b},1.0],"metallicFactor":0.3,"roughnessFactor":0.5}}}}],"buffers":[{{"byteLength":{len},"uri":"data:application/octet-stream;base64,{data}"}}],"bufferViews":[{{"buffer":0,"byteOffset":0,"byteLength":{npos},"target":34962}},{{"buffer":0,"byteOffset":{npos},"byteLength":{nn},"target":34962}}],"accessors":[{{"bufferView":0,"componentType":5126,"count":{count},"type":"VEC3","min":[{x0},{y0},{z0}],"max":[{x1},{y1},{z1}]}},{{"bufferView":1,"componentType":5126,"count":{count},"type":"VEC3"}}]}}"#,
                 name = data.name.replace('"', "'"),
                 r = c[0],
                 g = c[1],
@@ -275,7 +275,7 @@ pub fn write(r: &RegenResult, data: &ModelData, fmt: Format, path: &Path) -> Res
             let (pos, tri) = indexed(r);
             let c = data.appearance.color;
             let hex = format!("#{:02X}{:02X}{:02X}", (c[0] * 255.0) as u8, (c[1] * 255.0) as u8, (c[2] * 255.0) as u8);
-            let mut model = format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<model unit=\"millimeter\" xml:lang=\"de-DE\" xmlns=\"http://schemas.microsoft.com/3dmanufacturing/core/2015/02\">\n <metadata name=\"Title\">{}</metadata>\n <metadata name=\"Application\">Freo</metadata>\n <resources>\n  <basematerials id=\"1\"><base name=\"{}\" displaycolor=\"{}\"/></basematerials>\n  <object id=\"2\" type=\"model\" name=\"{}\" pid=\"1\" pindex=\"0\">\n   <mesh>\n    <vertices>\n", xml(&data.name), xml(&data.name), hex, xml(&data.name));
+            let mut model = format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<model unit=\"millimeter\" xml:lang=\"de-DE\" xmlns=\"http://schemas.microsoft.com/3dmanufacturing/core/2015/02\">\n <metadata name=\"Title\">{}</metadata>\n <metadata name=\"Application\">SolidWork</metadata>\n <resources>\n  <basematerials id=\"1\"><base name=\"{}\" displaycolor=\"{}\"/></basematerials>\n  <object id=\"2\" type=\"model\" name=\"{}\" pid=\"1\" pindex=\"0\">\n   <mesh>\n    <vertices>\n", xml(&data.name), xml(&data.name), hex, xml(&data.name));
             for p in &pos {
                 model.push_str(&format!("     <vertex x=\"{}\" y=\"{}\" z=\"{}\"/>\n", p.x as f32, p.y as f32, p.z as f32));
             }
@@ -291,7 +291,7 @@ pub fn write(r: &RegenResult, data: &ModelData, fmt: Format, path: &Path) -> Res
         }
         Format::Obj => {
             let t = &r.topo;
-            writeln!(f, "# Freo export of {}\no {}", data.name, data.name).map_err(e)?;
+            writeln!(f, "# SolidWork export of {}\no {}", data.name, data.name).map_err(e)?;
             for p in &t.positions {
                 writeln!(f, "v {} {} {}", p.x, p.y, p.z).map_err(e)?;
             }
@@ -389,8 +389,8 @@ pub fn step_text(r: &RegenResult, name: &str, file_name: &str) -> String {
         format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}", y, m, d, (secs / 3600) % 24, (secs / 60) % 60, secs % 60)
     };
     out.push_str("ISO-10303-21;\nHEADER;\n");
-    out.push_str("FILE_DESCRIPTION(('Freo faceted solid model'),'2;1');\n");
-    out.push_str(&format!("FILE_NAME('{}','{}',('Freo'),(''),'Freo STEP writer','Freo','');\n", step_str(file_name), stamp));
+    out.push_str("FILE_DESCRIPTION(('SolidWork faceted solid model'),'2;1');\n");
+    out.push_str(&format!("FILE_NAME('{}','{}',('SolidWork'),(''),'SolidWork STEP writer','SolidWork','');\n", step_str(file_name), stamp));
     out.push_str("FILE_SCHEMA(('AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }'));\nENDSEC;\nDATA;\n");
     let mut id = 0usize;
     let mut ent = |out: &mut String, body: String| -> usize {

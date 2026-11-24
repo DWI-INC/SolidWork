@@ -127,7 +127,7 @@ pub fn board(s: &Schematic) -> Board {
     put(&mut b, "C3", 135.0, 110.0, 90.0);
     put(&mut b, "R3", 138.0, 121.0, 90.0);
     put(&mut b, "D1", 143.5, 114.0, 270.0);
-    b.texts.push((p(128.0, 132.5), "Freo LED-Blinker".into(), 1.2));
+    b.texts.push((p(128.0, 132.5), "SolidWork LED-Blinker".into(), 1.2));
     b
 }
 

@@ -8,7 +8,7 @@
 //! comes from dimensions (measured value against drawn length), dimension texts or the "1:2"
 //! in the title block.
 //!
-//! The part is built from ordinary, editable Freo features: the top view's outline extruded
+//! The part is built from ordinary, editable SolidWork features: the top view's outline extruded
 //! over the height, everything outside the front and side views' outlines cut away, and every
 //! hole or pocket outline inside a view cut over the depth its hidden lines show in the
 //! neighbouring view (through, when no hidden lines are drawn). A single view is extruded

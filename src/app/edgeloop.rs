@@ -1,4 +1,4 @@
-//! Fase / Rundung: when one edge of an opening (or of a face's outline) is picked, Freo finds the
+//! Fase / Rundung: when one edge of an opening (or of a face's outline) is picked, SolidWork finds the
 //! whole loop of edges it belongs to and asks whether all of it should be chamfered or rounded.
 
 use super::dlgkit::{btn, cwin_top, hline, lbl, pad};

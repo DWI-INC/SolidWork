@@ -107,7 +107,7 @@ impl OpenKind {
     }
 }
 
-/// What Freo can tell about a native Creo file (its geometry is in PTC's closed format).
+/// What SolidWork can tell about a native Creo file (its geometry is in PTC's closed format).
 pub struct CreoFileInfo {
     pub path: PathBuf,
     pub kind: String,
@@ -288,7 +288,7 @@ pub fn spotlight(q: SpotQuery, kind: OpenKind) -> std::sync::mpsc::Receiver<Vec<
 pub struct ExportDialog {
     pub dir: PathBuf,
     pub name: String,
-    /// None = native Freo part copy
+    /// None = native SolidWork part copy
     pub format: Option<super::export::Format>,
     pub history: Vec<PathBuf>,
     pub selected: Option<PathBuf>,
@@ -493,7 +493,7 @@ pub fn copy_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Title bar of Freo's dialogs, drawn here (instead of egui's) so the close × can turn red,
+/// Title bar of SolidWork's dialogs, drawn here (instead of egui's) so the close × can turn red,
 /// get a red outline and grow while the pointer is on it. Returns true when × was clicked.
 pub fn dialog_header(ui: &mut egui::Ui, title: &str) -> bool {
     const BAR: f32 = 30.0;
@@ -585,7 +585,7 @@ pub enum SaveKind {
     Drawing,
 }
 
-/// What Freo's explorer dialog is choosing a path for.
+/// What SolidWork's explorer dialog is choosing a path for.
 #[derive(Clone, Debug, PartialEq)]
 pub enum BrowsePurpose {
     WorkDir,
@@ -628,10 +628,10 @@ impl BrowsePurpose {
     fn type_label(&self) -> String {
         match self {
             BrowsePurpose::WorkDir => "Ordner".into(),
-            BrowsePurpose::SaveAs(SaveKind::Part) | BrowsePurpose::Assemble => "Freo-Teil (.pfprt)".into(),
-            BrowsePurpose::SaveAs(SaveKind::Assembly) => "Freo-Baugruppe (.pfasm)".into(),
-            BrowsePurpose::SaveAs(SaveKind::Drawing) => "Freo-Zeichnung (.pfdrw)".into(),
-            BrowsePurpose::DrawingModel => "Freo-Modelle (.pfprt, .pfasm)".into(),
+            BrowsePurpose::SaveAs(SaveKind::Part) | BrowsePurpose::Assemble => "SolidWork-Teil (.pfprt)".into(),
+            BrowsePurpose::SaveAs(SaveKind::Assembly) => "SolidWork-Baugruppe (.pfasm)".into(),
+            BrowsePurpose::SaveAs(SaveKind::Drawing) => "SolidWork-Zeichnung (.pfdrw)".into(),
+            BrowsePurpose::DrawingModel => "SolidWork-Modelle (.pfprt, .pfasm)".into(),
             BrowsePurpose::BomCsv(_) => "CSV (.csv)".into(),
             BrowsePurpose::DrawingExport(k) => format!("{} (.{})", k.to_uppercase(), k),
         }
@@ -646,7 +646,7 @@ impl BrowsePurpose {
     }
 }
 
-/// Freo's own explorer (replaces the macOS panels): folder picker, Speichern unter, Öffnen.
+/// SolidWork's own explorer (replaces the macOS panels): folder picker, Speichern unter, Öffnen.
 pub struct FileBrowser {
     pub purpose: BrowsePurpose,
     pub dir: PathBuf,
@@ -748,7 +748,7 @@ impl App {
         self.creo.home = true;
         self.tab = Tab::Home;
         self.nav_tab = NavTab::Browser;
-        self.messages.push(Message { text: "Willkommen bei Freo.".into(), kind: MsgKind::Info, failed: None });
+        self.messages.push(Message { text: "Willkommen bei SolidWork.".into(), kind: MsgKind::Info, failed: None });
     }
 
     pub fn leave_home(&mut self) {
@@ -813,7 +813,7 @@ impl App {
         self.browse(BrowsePurpose::WorkDir, dir, "");
     }
 
-    /// Opens Freo's explorer in `dir` for `purpose` (`name` pre-fills the file name).
+    /// Opens SolidWork's explorer in `dir` for `purpose` (`name` pre-fills the file name).
     pub fn browse(&mut self, purpose: BrowsePurpose, dir: PathBuf, name: &str) {
         let dir = if dir.is_dir() { dir } else { home_dir() };
         let keep_at_start = self.creo.keep_work_dir;
@@ -1021,7 +1021,7 @@ impl App {
                         ui.label("Ordner:");
                         ui.label(RichText::new(t.display().to_string()).strong());
                     });
-                    ui.checkbox(&mut d.keep_at_start, "Auch beim nächsten Start von Freo verwenden");
+                    ui.checkbox(&mut d.keep_at_start, "Auch beim nächsten Start von SolidWork verwenden");
                 } else {
                     ui.horizontal(|ui| {
                         ui.label("Dateiname:");
@@ -1119,7 +1119,9 @@ impl App {
         }
         v.push((Icon::Globe, "Benutzerordner".into(), Some(h)));
         v.push((Icon::WorkDir, "Arbeitsverzeichnis".into(), Some(self.work_dir.clone())));
-        v.push((Icon::WorkDir, "freo-work".into(), Some(super::default_work_dir())));
+        let default_dir = super::default_work_dir();
+        let label = default_dir.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        v.push((Icon::WorkDir, label, Some(default_dir)));
         // SD cards and USB sticks
         for vol in volumes() {
             let n = vol.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
@@ -1701,7 +1703,7 @@ impl App {
                     });
                     if ui
                         .add(egui::Button::new(RichText::new("🔍  Modelle auf diesem Mac finden").color(Color32::from_rgb(20, 90, 190))))
-                        .on_hover_text("Findet Creo- (.prt, .asm, .drw), STEP- und Freo-Dateien überall auf dem Mac, auf SD-Karten und USB-Sticks")
+                        .on_hover_text("Findet Creo- (.prt, .asm, .drw), STEP- und SolidWork-Dateien überall auf dem Mac, auf SD-Karten und USB-Sticks")
                         .clicked()
                     {
                         start_models = true;
@@ -1749,7 +1751,7 @@ impl App {
                             d.found.as_ref().map(|f| f.0.starts_with("Creo")).unwrap_or(false),
                             None,
                         );
-                        if r.on_hover_text("Alle Creo-, STEP- und Freo-Dateien auf dem Mac und angeschlossenen Laufwerken finden").clicked() {
+                        if r.on_hover_text("Alle Creo-, STEP- und SolidWork-Dateien auf dem Mac und angeschlossenen Laufwerken finden").clicked() {
                             start_models = true;
                         }
                         ui.add_space(8.0);
@@ -1984,7 +1986,7 @@ impl App {
         if start_models {
             d.found = None;
             d.selected = None;
-            d.pending = Some(("Creo-, STEP- und Freo-Dateien auf diesem Mac".into(), spotlight(SpotQuery::Models, kind)));
+            d.pending = Some(("Creo-, STEP- und SolidWork-Dateien auf diesem Mac".into(), spotlight(SpotQuery::Models, kind)));
         }
         if let Some(t) = start_name {
             d.found = None;
@@ -2463,7 +2465,7 @@ impl App {
                     ui.add_space(8.0);
                     ui.label(RichText::new("Die Geometrie in Creo-Dateien ist in einem geschlossenen, komprimierten Format von PTC gespeichert, das außerhalb von Creo nicht zuverlässig gelesen werden kann.").color(TEXT));
                     ui.add_space(6.0);
-                    ui.label(RichText::new("So kommt das Modell zu Freo:").strong());
+                    ui.label(RichText::new("So kommt das Modell zu SolidWork:").strong());
                     ui.label("1.  In Creo: Datei ▸ Speichern unter ▸ Kopie speichern");
                     ui.label("2.  Typ: STEP (*.stp) wählen, OK");
                     ui.label("3.  Die .stp-Datei hier öffnen – Flächen, Bohrungen und Rundungen kommen exakt an.");
@@ -2657,7 +2659,7 @@ impl App {
                     ui.horizontal(|ui| {
                         let label = |f: Option<Format>| match f {
                             Some(x) => format!("{} (*.{})", x.name(), x.ext()),
-                            None => "Freo-Teil (*.pfprt)".to_string(),
+                            None => "SolidWork-Teil (*.pfprt)".to_string(),
                         };
                         egui::ComboBox::from_id_salt("export_type").width(300.0).selected_text(label(d.format)).show_ui(ui, |ui| {
                             if !asm {

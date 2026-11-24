@@ -57,7 +57,7 @@ fn mesh_import(r: &crate::model::regen::RegenResult, source: &str, format: &str)
 }
 
 impl App {
-    /// Kopieren: the selected features go to Freo's clipboard.
+    /// Kopieren: the selected features go to SolidWork's clipboard.
     pub fn copy_features(&mut self) {
         let ids = self.tree_selection.clone();
         let feats: Vec<Feature> = self.data.features.iter().filter(|f| ids.contains(&f.id) && f.id > CSYS_ID).cloned().collect();

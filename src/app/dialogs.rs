@@ -44,9 +44,9 @@ impl App {
             self.windows.controls = cwin(ctx, "controls_dlg", "Steuerung", false, egui::pos2(300.0, 170.0), 760.0, |ui| pad(ui, 10.0, controls));
         }
         if self.windows.about {
-            self.windows.about = cwin(ctx, "about_dlg", "Über Freo", false, egui::pos2(360.0, 200.0), 440.0, |ui| {
+            self.windows.about = cwin(ctx, "about_dlg", "Über SolidWork", false, egui::pos2(360.0, 200.0), 440.0, |ui| {
                 pad(ui, 10.0, |ui| {
-                    ui.heading("Freo");
+                    ui.heading("SolidWork");
                     ui.label("Ein parametrischer, KE-basierter 3D-CAD-Modellierer im Stil von Creo für macOS, geschrieben in Rust.");
                     ui.label("Geometriekern: BSP-Baum-CSG-B-Rep mit Topologiereparatur, Skizzierer mit Bedingungslöser, historienbasierte Regenerierung.");
                     ui.label(RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION"))).weak());

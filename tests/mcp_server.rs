@@ -1,4 +1,4 @@
-//! Drives the freo-mcp binary over stdin/stdout like an MCP client (Claude Desktop, Claude Code …).
+//! Drives the solidwork-mcp binary over stdin/stdout like an MCP client (Claude Desktop, Claude Code …).
 
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
@@ -13,7 +13,7 @@ struct Client {
 
 impl Client {
     fn start() -> Client {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_freo-mcp")).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().expect("start freo-mcp");
+        let mut child = Command::new(env!("CARGO_BIN_EXE_solidwork-mcp")).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().expect("start solidwork-mcp");
         let stdin = child.stdin.take().unwrap();
         let stdout = BufReader::new(child.stdout.take().unwrap());
         Client { child, stdin, stdout, next_id: 1 }
@@ -99,7 +99,7 @@ fn handshake_tools_and_protocol_errors() {
     let init = c.initialize();
     let r = &init["result"];
     assert_eq!(r["protocolVersion"], "2025-06-18");
-    assert_eq!(r["serverInfo"]["name"], "freo");
+    assert_eq!(r["serverInfo"]["name"], "solidwork");
     assert!(r["capabilities"]["tools"].is_object());
     assert!(r["instructions"].as_str().unwrap().contains("millimetres"));
 
@@ -152,7 +152,7 @@ fn handshake_tools_and_protocol_errors() {
     assert_eq!(c.send_raw("{ not json")["error"]["code"], -32700);
 
     let res = c.request("resources/list", json!({}));
-    assert!(res["result"]["resources"].as_array().unwrap().iter().any(|r| r["uri"] == "freo://model/current"));
+    assert!(res["result"]["resources"].as_array().unwrap().iter().any(|r| r["uri"] == "solidwork://model/current"));
     let model = c.request("resources/read", json!({ "uri": "freo://model/current" }));
     let data: Value = serde_json::from_str(model["result"]["contents"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(data["name"], "PRT0001");

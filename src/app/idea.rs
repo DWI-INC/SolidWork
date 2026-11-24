@@ -287,7 +287,7 @@ impl App {
         let result = if save_as {
             let Some(path) = rfd::FileDialog::new()
                 .set_title("Idee speichern")
-                .add_filter("Freo Idee", &["prti"])
+                .add_filter("SolidWork Idee", &["prti"])
                 .set_directory(self.save_dir(idea.path.as_ref()))
                 .set_file_name(format!("{}.prti", idea.data.name.to_lowercase()))
                 .save_file()
@@ -338,15 +338,10 @@ impl App {
                 let maximized = ctx.input(|input| input.viewport().maximized.unwrap_or(false));
                 ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
             }
-            let brand = rect.left_center() + vec2(84.0, 0.0);
-            let mark = egui::Rect::from_center_size(brand, vec2(14.0, 14.0));
-            let blue = Color32::from_rgb(52, 120, 190);
-            ui.painter().rect_stroke(mark, 2, Stroke::new(2.0_f32, blue), egui::StrokeKind::Inside);
-            ui.painter().rect_filled(mark.shrink(4.0), 0, blue);
-            ui.painter().text(brand + vec2(12.0, 0.0), egui::Align2::LEFT_CENTER, "freo", egui::FontId::proportional(17.0), theme::TEXT);
+            ribbon::paint_brand(ui, rect.left_center() + vec2(78.0, 0.0), &mut self.brand_icon);
             ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, format!("{} – Idee", idea.data.name), egui::FontId::proportional(14.0), Color32::BLACK);
         });
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!("{}{} – Idee – Freo", idea.data.name, if idea.dirty() { " *" } else { "" })));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!("{}{} – Idee – SolidWork", idea.data.name, if idea.dirty() { " *" } else { "" })));
         if self.new_dialog.is_none() && !ctx.wants_keyboard_input() {
             ctx.input(|input| {
                 if input.key_pressed(egui::Key::Escape) {
@@ -622,7 +617,7 @@ impl App {
             self.confirm_new();
         }
         if open && self.confirm_discard() {
-            if let Some(path) = rfd::FileDialog::new().set_title("Idee öffnen").add_filter("Freo Idee", &["prti"]).pick_file() {
+            if let Some(path) = rfd::FileDialog::new().set_title("Idee öffnen").add_filter("SolidWork Idee", &["prti"]).pick_file() {
                 self.load_idea(path);
             }
         }

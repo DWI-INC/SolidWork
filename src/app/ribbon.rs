@@ -40,6 +40,16 @@ use theme::*;
 pub const RIB_H: f32 = 88.0;
 const FONT: f32 = 12.5;
 
+pub(super) fn paint_brand(ui: &egui::Ui, left: egui::Pos2, icon: &mut Option<egui::TextureHandle>) {
+    let texture = icon.get_or_insert_with(|| {
+        let pixels = crate::icon::render_icon(64);
+        ui.ctx().load_texture("SolidWork", egui::ColorImage::from_rgba_unmultiplied([64, 64], &pixels), egui::TextureOptions::LINEAR)
+    });
+    let mark = Rect::from_center_size(left + vec2(11.0, 0.0), vec2(22.0, 22.0));
+    egui::Image::new(&*texture).paint_at(ui, mark);
+    ui.painter().text(mark.right_center() + vec2(5.0, 0.0), Align2::LEFT_CENTER, "SolidWork", FontId::proportional(17.0), TEXT);
+}
+
 pub fn button_bg(ui: &egui::Ui, rect: Rect, resp: &Response, enabled: bool, selected: bool) {
     let p = ui.painter();
     if selected || (enabled && resp.is_pointer_button_down_on()) {
@@ -502,23 +512,19 @@ impl App {
             }
             let within = self.editing_from_asm().and(self.asm.as_ref()).map(|a| format!("  ⟵ {}.ASM", a.data.name)).unwrap_or_default();
             let title = if self.creo.home {
-                "Freo".to_string()
+                "SolidWork".to_string()
             } else {
                 match self.drw.as_ref().filter(|d| d.active) {
-                    Some(d) => format!("{} (Aktiv){} - Freo", d.data.name, if d.dirty { " *" } else { "" }),
-                    None => format!("{} (Aktiv){}{} - Freo", self.data.name, if self.dirty { " *" } else { "" }, within),
+                    Some(d) => format!("{} (Aktiv){} - SolidWork", d.data.name, if d.dirty { " *" } else { "" }),
+                    None => format!("{} (Aktiv){}{} - SolidWork", self.data.name, if self.dirty { " *" } else { "" }, within),
                 }
             };
             ui.painter().text(rect.center(), Align2::CENTER_CENTER, title, FontId::proportional(14.0), TEXT);
             ui.horizontal_centered(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
                 ui.add_space(78.0);
-                // product mark in the spot of Creo's logo
-                let (lr, _) = ui.allocate_exact_size(vec2(72.0, 24.0), Sense::hover());
-                let sq = Rect::from_min_size(pos2(lr.left() + 2.0, lr.center().y - 7.0), vec2(14.0, 14.0));
-                ui.painter().rect_stroke(sq, 2.0, Stroke::new(2.0_f32, Color32::from_rgb(52, 120, 190)), StrokeKind::Inside);
-                ui.painter().rect_filled(Rect::from_min_size(sq.min + vec2(3.5, 3.5), vec2(5.0, 7.0)), 0.0, Color32::from_rgb(52, 120, 190));
-                ui.painter().text(pos2(sq.right() + 5.0, lr.center().y), Align2::LEFT_CENTER, "freo", FontId::proportional(17.0), Color32::from_rgb(70, 76, 80));
+                let (brand, _) = ui.allocate_exact_size(vec2(106.0, 24.0), Sense::hover());
+                paint_brand(ui, brand.left_center(), &mut self.brand_icon);
                 ui.add_space(6.0);
                 let busy = self.busy();
                 let home = self.creo.home;
@@ -1087,7 +1093,7 @@ impl App {
             });
         }
         self.operations_group(ui);
-        // Creo commands of this tab that Freo does not have yet
+        // Creo commands of this tab that SolidWork does not have yet
         let mut todo: Option<&str> = None;
         use super::modelcmds::FileTask;
         let ((), t) = group_drop(ui, "Daten abrufen", |ui| {
@@ -1486,13 +1492,13 @@ impl App {
         match todo {
             Some("Flächen vereinigen") => self.unite_faces(),
             Some("Entfernen") => self.remove_faces(),
-            Some(n) => self.say(format!("„{}“ ist in Freo noch nicht verfügbar.", n), MsgKind::Info),
+            Some(n) => self.say(format!("„{}“ ist in SolidWork noch nicht verfügbar.", n), MsgKind::Info),
             None => {}
         }
     }
 
     fn analysis_ribbon(&mut self, ui: &mut egui::Ui) {
-        // commands of Creo's Analyse tab that Freo does not compute yet
+        // commands of Creo's Analyse tab that SolidWork does not compute yet
         let mut todo: Option<&str> = None;
         // Creo's tooltip (icon, bold name, description); a click reports the command as not available
         fn cmd<'a>(r: Response, icon: Icon, name: &'a str, text: &str, todo: &mut Option<&'a str>) {
@@ -1940,7 +1946,7 @@ impl App {
     fn tools_ribbon(&mut self, ui: &mut egui::Ui) {
         let free = self.editor.is_none() && self.sketch.is_none();
         let part = !self.in_asm();
-        // Creo commands of this tab that Freo does not have yet
+        // Creo commands of this tab that SolidWork does not have yet
         let mut todo: Option<&str> = None;
         let ((), t) = group_drop(ui, "Untersuchen", |ui| {
             if self.in_asm() {

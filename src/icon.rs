@@ -1,7 +1,7 @@
-//! The app icon. `assets/freo-icon.png` (1024 px, transparent, macOS icon grid) is the one
+//! The app icon. `assets/solidwork-icon.png` is the one
 //! source; every size (window icon, .icns, .ico, Linux PNGs) is scaled from it.
 
-const MASTER: &[u8] = include_bytes!("../assets/freo-icon.png");
+const MASTER: &[u8] = include_bytes!("../assets/solidwork-icon.png");
 
 /// The icon as `size`×`size` RGBA pixels.
 pub fn render_icon(size: usize) -> Vec<u8> {

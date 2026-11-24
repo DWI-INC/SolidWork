@@ -245,7 +245,7 @@ fn collector(ui: &mut egui::Ui, title: &str, h: f32, active: bool, details: bool
 
 impl App {
     fn todo2(&mut self, name: &str) {
-        self.say(format!("„{}“ ist in Freo noch nicht verfügbar.", name.trim_end_matches("...")), MsgKind::Info);
+        self.say(format!("„{}“ ist in SolidWork noch nicht verfügbar.", name.trim_end_matches("...")), MsgKind::Info);
     }
 
     pub(super) fn dlg_ref_viewer(&mut self, ctx: &egui::Context, t: &mut ToolsUi) {

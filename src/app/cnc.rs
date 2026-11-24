@@ -150,7 +150,7 @@ fn hash_of(parts: &[&str]) -> u64 {
     h.finish()
 }
 
-/// WCS (Z up) to Freo world (Y up).
+/// WCS (Z up) to SolidWork world (Y up).
 fn w(p: DVec3) -> [f32; 3] {
     let q = smesh::printer_to_world(p);
     [q.x as f32, q.y as f32, q.z as f32]
@@ -1032,7 +1032,7 @@ impl App {
             self.fit_pending = false;
         }
         self.camera.depth = bb.diagonal() * 10.0 + 2000.0;
-        // navigation as everywhere in Freo
+        // navigation as everywhere in SolidWork
         let (scroll, zoom, mods, pointer) = ui.input(|i| (i.smooth_scroll_delta, i.zoom_delta(), i.modifiers, i.pointer.clone()));
         let local = |p: Pos2| (p.x - rect.min.x, p.y - rect.min.y);
         let hover = resp.hover_pos();

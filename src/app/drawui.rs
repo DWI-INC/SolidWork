@@ -266,7 +266,7 @@ impl App {
         self.say(format!("Zeichnung {} geöffnet.", p.display()), MsgKind::Success);
     }
 
-    /// Datei ▸ PDF / DXF / SVG: asks where in Freo's explorer, then writes.
+    /// Datei ▸ PDF / DXF / SVG: asks where in SolidWork's explorer, then writes.
     pub fn export_drawing(&mut self, kind: &str) {
         let Some(d) = &self.drw else { return };
         let name = d.data.name.to_lowercase();
@@ -663,7 +663,7 @@ impl App {
         self.drawing_shortcuts(ctx);
         self.sync_context_tab();
         let name = self.drw.as_ref().map(|d| d.data.name.clone()).unwrap_or_default();
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!("{} (Active) - Freo", name)));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!("{} (Active) - SolidWork", name)));
         self.title_bar(ctx);
         self.tab_strip(ctx);
         egui::TopBottomPanel::top("ribbon").frame(egui::Frame::NONE.inner_margin(egui::Margin::same(4))).show(ctx, |ui| {

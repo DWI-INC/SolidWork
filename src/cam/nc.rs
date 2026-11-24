@@ -75,7 +75,7 @@ pub fn write(out: &Output, s: &Setup, part_name: &str, now: &str) -> Result<Vec<
             let _ = writeln!(g, "%");
             let _ = writeln!(g, "O{:04} ({})", 1000 + gi, ascii(part_name).to_uppercase());
         }
-        let _ = writeln!(g, "(Freo CAM {} - {})", env!("CARGO_PKG_VERSION"), ascii(now));
+        let _ = writeln!(g, "(SolidWork CAM {} - {})", env!("CARGO_PKG_VERSION"), ascii(now));
         let _ = writeln!(g, "(Teil {} - Material {})", ascii(part_name), ascii(s.material().name));
         let _ = writeln!(g, "(Maschine {} - {})", ascii(&s.machine.name()), c.name());
         let size = out.job.stock_size();

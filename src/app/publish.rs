@@ -185,7 +185,7 @@ pub fn pdf(pages: &[(f64, f64, Vec<Prim>)], title: &str) -> Vec<u8> {
     objs.push("<< /Type /Catalog /Pages 2 0 R >>".into());
     objs.push(format!("<< /Type /Pages /Kids [{}] /Count {} >>", kids.join(" "), np));
     objs.push("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>".into());
-    objs.push(format!("<< /Title {} /Producer (Freo) /Creator (Freo drawing) >>", pdf_string(title)));
+    objs.push(format!("<< /Title {} /Producer (SolidWork) /Creator (SolidWork drawing) >>", pdf_string(title)));
     for (i, (w, h, prims)) in pages.iter().enumerate() {
         let content = pdf_page(prims);
         objs.push(format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {} {}] /Resources << /Font << /F1 3 0 R >> >> /Contents {} 0 R >>", n(w * k), n(h * k), 6 + 2 * i));

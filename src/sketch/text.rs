@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
-/// Fonts that ship with Freo (always available).
+/// Fonts that ship with SolidWork (always available).
 pub const FONTS: [&str; 2] = ["Ubuntu Light", "Hack"];
 
 fn font(i: u8) -> FontRef<'static> {

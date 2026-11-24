@@ -1,7 +1,7 @@
 //! KiCad file exchange: .kicad_sch (schematic, with the used library symbols embedded) and
 //! .kicad_pcb (board) in KiCad 8's s-expression format, both directions.
 //!
-//! KiCad library symbols are y-up while Freo's (and KiCad's schematic sheet) are y-down, so
+//! KiCad library symbols are y-up while SolidWork's (and KiCad's schematic sheet) are y-down, so
 //! symbol geometry is mirrored in y on the way through.
 
 use super::board::{layer_from_name, layer_name, Board, FpInst, Track, Via, Zone};
@@ -195,7 +195,7 @@ fn sch_body(sch: &Schematic, project: &str, stem: &str, ids: &mut Ids, path_uuid
         v.push(l("sheet", shv));
         // the sub-sheet's own file
         let child_path = format!("{}/{}", path_uuids, sid_text);
-        let mut cv = vec![l("version", vec![a("20231120")]), l("generator", vec![s("freo")]), l("generator_version", vec![s("1.2")]), ids.next(), l("paper", vec![s("A4")])];
+        let mut cv = vec![l("version", vec![a("20231120")]), l("generator", vec![s("solidwork")]), l("generator_version", vec![s("1.2")]), ids.next(), l("paper", vec![s("A4")])];
         cv.push(l("title_block", vec![l("title", vec![s(&sh.name)])]));
         let slot = files.len();
         files.push((file.clone(), String::new()));
@@ -210,8 +210,8 @@ pub fn write_sch_files(sch: &Schematic, project: &str) -> Vec<(String, String)> 
     let mut ids = Ids(0);
     let root = ids.next();
     let root_id = root.at(1).unwrap_or("").to_string();
-    let mut v = vec![l("version", vec![a("20231120")]), l("generator", vec![s("freo")]), l("generator_version", vec![s("1.2")]), root, l("paper", vec![s("A4")])];
-    v.push(l("title_block", vec![l("title", vec![s(if sch.title.is_empty() { project } else { &sch.title })]), l("company", vec![s("Freo")])]));
+    let mut v = vec![l("version", vec![a("20231120")]), l("generator", vec![s("solidwork")]), l("generator_version", vec![s("1.2")]), root, l("paper", vec![s("A4")])];
+    v.push(l("title_block", vec![l("title", vec![s(if sch.title.is_empty() { project } else { &sch.title })]), l("company", vec![s("SolidWork")])]));
     let mut files = vec![];
     v.extend(sch_body(sch, project, project, &mut ids, "", &root_id, &mut files));
     v.push(l("sheet_instances", vec![l("path", vec![s("/"), l("page", vec![s("1")])])]));
@@ -385,7 +385,7 @@ pub fn read_symbol_lib(src: &str, lib: &str) -> Result<Vec<Symbol>, String> {
 
 /// A .kicad_sym library holding the given symbols.
 pub fn write_symbol_lib(syms: &[Symbol]) -> String {
-    let mut v = vec![l("version", vec![a("20231120")]), l("generator", vec![s("freo")])];
+    let mut v = vec![l("version", vec![a("20231120")]), l("generator", vec![s("solidwork")])];
     for sym in syms {
         let mut x = sym.clone();
         x.id = sym.short().to_string();
@@ -658,7 +658,7 @@ pub fn write_pcb(b: &Board, project: &str) -> String {
     let mut nets: HashMap<String, usize> = HashMap::new();
     let mut v = vec![
         l("version", vec![a("20240108")]),
-        l("generator", vec![s("freo")]),
+        l("generator", vec![s("solidwork")]),
         l("generator_version", vec![s("1.2")]),
         l("general", vec![l("thickness", vec![n(b.thickness)]), l("legacy_teardrops", vec![a("no")])]),
         l("paper", vec![s("A4")]),
@@ -959,7 +959,7 @@ pub fn write_footprint_file(fp: &Footprint) -> String {
     let mut sx = fp_sx(&f, &HashMap::new(), 2, &mut ids, true);
     if let Sx::List(v) = &mut sx {
         v.insert(2, l("version", vec![a("20240108")]));
-        v.insert(3, l("generator", vec![s("freo")]));
+        v.insert(3, l("generator", vec![s("solidwork")]));
     }
     super::sexpr::write(&sx)
 }

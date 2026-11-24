@@ -414,7 +414,7 @@ impl App {
         if cmd && ctx.input(|i| i.key_pressed(egui::Key::O)) {
             self.open();
         }
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title("Freo".into()));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title("SolidWork".into()));
         self.title_bar(ctx);
         self.tab_strip(ctx);
         if !self.creo.ribbon_min_hidden() {
@@ -498,7 +498,7 @@ impl eframe::App for App {
             return;
         }
         self.shortcuts(ctx);
-        ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!("{} (Aktiv) - Freo", self.data.name)));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!("{} (Aktiv) - SolidWork", self.data.name)));
         if let Some(p) = ctx.input(|i| i.raw.dropped_files.first().and_then(|f| f.path.clone())) {
             // a part dropped on an assembly is assembled, like dragging from Creo's browser
             if self.in_asm() && p.extension().map(|e| e == "pfprt").unwrap_or(false) {

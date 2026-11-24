@@ -70,7 +70,7 @@ pub fn placements(b: &Board) -> Vec<Place> {
 /// KiCad-style .pos file for one side (or both).
 pub fn pos_file(b: &Board, side: Option<bool>) -> String {
     let mut s = String::new();
-    let _ = writeln!(s, "### Footprint positions - created by Freo {} ###", env!("CARGO_PKG_VERSION"));
+    let _ = writeln!(s, "### Footprint positions - created by SolidWork {} ###", env!("CARGO_PKG_VERSION"));
     let _ = writeln!(s, "## Unit = mm, Angle = deg.");
     let _ = writeln!(s, "## Side : {}", match side {
         Some(true) => "top",
@@ -113,7 +113,7 @@ pub fn job_file(b: &Board, name: &str) -> String {
     let r = &b.rules;
     let min_w = b.tracks.iter().map(|t| t.width).fold(f64::MAX, f64::min);
     let v = serde_json::json!({
-        "Header": { "GenerationSoftware": { "Vendor": "Freo", "Application": "Freo Leiterplatte", "Version": env!("CARGO_PKG_VERSION") }, "CreationDate": "" },
+        "Header": { "GenerationSoftware": { "Vendor": "SolidWork", "Application": "SolidWork Leiterplatte", "Version": env!("CARGO_PKG_VERSION") }, "CreationDate": "" },
         "GeneralSpecs": {
             "ProjectId": { "Name": name, "GUID": "00000000-0000-0000-0000-000000000000", "Revision": "1" },
             "Size": { "X": (w * 1000.0).round() / 1000.0, "Y": (h * 1000.0).round() / 1000.0 },
@@ -178,8 +178,8 @@ pub fn ipc2581(b: &Board, name: &str) -> String {
     }
     let _ = writeln!(s, r#"    </DictionaryStandard>"#);
     let _ = writeln!(s, r#"  </Content>"#);
-    let _ = writeln!(s, r#"  <LogisticHeader><Role id="Owner" roleFunction="SENDER"/><Enterprise id="Freo" code="NONE"/><Person name="Freo" enterpriseRef="Freo" roleRef="Owner"/></LogisticHeader>"#);
-    let _ = writeln!(s, r#"  <HistoryRecord number="1" origination="" software="Freo" lastChange=""><FileRevision fileRevisionId="1" comment=""><SoftwarePackage name="Freo" revision="{}" vendor="Freo"/></FileRevision></HistoryRecord>"#, env!("CARGO_PKG_VERSION"));
+    let _ = writeln!(s, r#"  <LogisticHeader><Role id="Owner" roleFunction="SENDER"/><Enterprise id="SolidWork" code="NONE"/><Person name="SolidWork" enterpriseRef="SolidWork" roleRef="Owner"/></LogisticHeader>"#);
+    let _ = writeln!(s, r#"  <HistoryRecord number="1" origination="" software="SolidWork" lastChange=""><FileRevision fileRevisionId="1" comment=""><SoftwarePackage name="SolidWork" revision="{}" vendor="SolidWork"/></FileRevision></HistoryRecord>"#, env!("CARGO_PKG_VERSION"));
     // BOM
     let _ = writeln!(s, r#"  <Bom name="{}_BOM"><BomHeader assembly="{}" revision="1"/>"#, esc(name), esc(name));
     let mut groups: Vec<(String, String, Vec<String>)> = vec![];
@@ -194,7 +194,7 @@ pub fn ipc2581(b: &Board, name: &str) -> String {
         for r in refs {
             let _ = writeln!(s, r#"      <RefDes name="{}" packageRef="{}" populate="true" layerRef="{}"/>"#, esc(r), esc(pkg), layer_name(if b.footprints.iter().find(|f| &f.reference == r).is_some_and(|f| f.bottom) { B_CU } else { F_CU }));
         }
-        let _ = writeln!(s, r#"      <Characteristics category="ELECTRICAL"><Textual definitionSource="Freo" textualCharacteristicName="Value" textualCharacteristicValue="{}"/></Characteristics>"#, esc(val));
+        let _ = writeln!(s, r#"      <Characteristics category="ELECTRICAL"><Textual definitionSource="SolidWork" textualCharacteristicName="Value" textualCharacteristicValue="{}"/></Characteristics>"#, esc(val));
         let _ = writeln!(s, r#"    </BomItem>"#);
     }
     let _ = writeln!(s, r#"  </Bom>"#);

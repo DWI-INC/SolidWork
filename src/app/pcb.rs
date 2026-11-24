@@ -1,7 +1,7 @@
 //! Leiterplatte (Werkzeuge ▸ Manufacture ▸ Leiterplatte): schematic and board editors in the
 //! style of Creo's application ribbons — symbol library, wires, net labels, power symbols,
 //! annotation and ERC; footprint placement, ratsnest, manual and automatic routing, vias,
-//! copper zones, DRC; Gerber/Excellon, BOM, KiCad files and the board as a Freo assembly.
+//! copper zones, DRC; Gerber/Excellon, BOM, KiCad files and the board as a SolidWork assembly.
 
 use super::dlgkit;
 use super::icons::{self, Icon};
@@ -1024,7 +1024,7 @@ impl App {
         }
     }
 
-    /// The board as a Freo assembly (laminate, copper, components).
+    /// The board as a SolidWork assembly (laminate, copper, components).
     pub fn pcb_make_3d(&mut self) {
         let name = self.pcb_base_name();
         match body3d::assembly(&self.pcb.project.board, &name) {
@@ -1159,7 +1159,7 @@ impl App {
             if large(ui, Icon::PcbGerber, "Gerber +\nBohrdaten", !self.pcb.project.board.outline.is_empty(), false).on_hover_text("Fertigungsdaten: Gerber RS-274X aller Lagen und Excellon-Bohrdateien").clicked() {
                 self.pcb_export_fab();
             }
-            if large(ui, Icon::Pcb3d, "3D-\nModell", !self.pcb.project.board.outline.is_empty(), false).on_hover_text("Leiterplatte mit Bauteilen als Freo-Baugruppe – für Gehäuse und Baugruppen").clicked() {
+            if large(ui, Icon::Pcb3d, "3D-\nModell", !self.pcb.project.board.outline.is_empty(), false).on_hover_text("Leiterplatte mit Bauteilen als SolidWork-Baugruppe – für Gehäuse und Baugruppen").clicked() {
                 self.pcb_make_3d();
             }
             stack(ui, |ui| {
@@ -2117,7 +2117,7 @@ impl App {
             pa.text(sc(p(w - 108.0, h - 10.0 - 17.5)), Align2::LEFT_CENTER, format!("Projekt: {}", self.pcb.project.name), FontId::proportional(px), INK);
             pa.text(sc(p(w - 108.0, h - 10.0 - 10.5)), Align2::LEFT_CENTER, "Format: A4", FontId::proportional(px), INK);
             pa.text(sc(p(w - 58.0, h - 10.0 - 10.5)), Align2::LEFT_CENTER, "Blatt: 1/1", FontId::proportional(px), INK);
-            pa.text(sc(p(w - 108.0, h - 10.0 - 3.5)), Align2::LEFT_CENTER, "Freo Leiterplatte", FontId::proportional(px), INK);
+            pa.text(sc(p(w - 108.0, h - 10.0 - 3.5)), Align2::LEFT_CENTER, "SolidWork Leiterplatte", FontId::proportional(px), INK);
             pa.text(sc(p(w - 58.0, h - 10.0 - 3.5)), Align2::LEFT_CENTER, format!("Rev. {}", env!("CARGO_PKG_VERSION")), FontId::proportional(px), INK);
         }
         // grid dots when zoomed in

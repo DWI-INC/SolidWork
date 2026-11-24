@@ -1,4 +1,4 @@
-//! Freo — Creo-style parametric 3D CAD.
+//! SolidWork — Creo-style parametric 3D CAD.
 
 // no console window behind the app on Windows
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
@@ -70,19 +70,31 @@ fn style(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
-/// The app was called ParaForm before: carry its settings (recent files, folders) over once.
-fn migrate_settings() {
-    let Some(home) = std::env::var_os("HOME") else { return };
-    let base = std::path::PathBuf::from(home).join("Library/Application Support");
-    let (old, new) = (base.join("ParaForm"), base.join("Freo"));
-    if old.join("app.ron").is_file() && !new.join("app.ron").exists() && std::fs::create_dir_all(&new).is_ok() {
-        let _ = std::fs::copy(old.join("app.ron"), new.join("app.ron"));
+/// Carry recent files, workspace preferences and other settings over on first launch.
+fn migrate_settings() -> std::io::Result<()> {
+    let Some(dir) = eframe::storage_dir("SolidWork") else { return Ok(()) };
+    let destination = dir.join("app.ron");
+    if destination.exists() {
+        return Ok(());
     }
+    for previous in ["Freo", "ParaForm"] {
+        let Some(source) = eframe::storage_dir(previous).map(|path| path.join("app.ron")).filter(|path| path.is_file()) else { continue };
+        std::fs::create_dir_all(&dir)?;
+        let mut temp = tempfile::NamedTempFile::new_in(&dir)?;
+        std::io::copy(&mut std::fs::File::open(source)?, &mut temp)?;
+        if let Err(err) = temp.persist_noclobber(&destination) {
+            if err.error.kind() != std::io::ErrorKind::AlreadyExists {
+                return Err(err.error);
+            }
+        }
+        break;
+    }
+    Ok(())
 }
 
 /// Dock/window icon. eframe would otherwise put its default egui logo over the bundle icon:
-/// inside Freo.app the empty icon keeps the bundle's Freo.icns, elsewhere (cargo run) we
-/// draw the same icon as `make_icon`.
+/// inside SolidWork.app the empty icon keeps the bundle's SolidWork.icns, elsewhere (cargo run) we
+/// use the same image as `make_icon`.
 fn app_icon() -> egui::IconData {
     let bundled = std::env::current_exe().map(|p| p.to_string_lossy().contains(".app/Contents/MacOS")).unwrap_or(false);
     if bundled {
@@ -93,19 +105,21 @@ fn app_icon() -> egui::IconData {
 }
 
 fn main() -> eframe::Result<()> {
-    // `freo --mcp`: headless MCP server on stdio for AI assistants (same as the freo-mcp binary)
+    // `solidwork --mcp`: headless MCP server on stdio for AI assistants (same as the solidwork-mcp binary)
     if std::env::args().skip(1).any(|a| a == "--mcp") {
         if let Err(e) = freo::mcp::serve_stdio() {
-            eprintln!("freo --mcp: {}", e);
+            eprintln!("solidwork --mcp: {}", e);
             std::process::exit(1);
         }
         return Ok(());
     }
-    migrate_settings();
+    if let Err(err) = migrate_settings() {
+        eprintln!("Could not import previous settings: {err}");
+    }
     freo::macos_open::install();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("Freo")
+            .with_title("SolidWork")
             .with_inner_size([1440.0, 900.0])
             .with_min_inner_size([960.0, 620.0])
             .with_fullsize_content_view(true)
@@ -119,7 +133,7 @@ fn main() -> eframe::Result<()> {
         ..Default::default()
     };
     eframe::run_native(
-        "Freo",
+        "SolidWork",
         options,
         Box::new(|cc| {
             style(&cc.egui_ctx);

@@ -322,7 +322,7 @@ fn chamfer_scheme_combo(ui: &mut egui::Ui, id: &str, set: &mut ChamferSet, width
     changed
 }
 
-/// Creo's cross-section list of a round ("Kreisförmig", "Konisch", ...); Freo's curvature-
+/// Creo's cross-section list of a round ("Kreisförmig", "Konisch", ...); SolidWork's curvature-
 /// continuous corner shapes follow under a rule.
 fn round_section_combo(ui: &mut egui::Ui, id: &str, set: &mut RoundSet, width: f32) -> bool {
     use crate::kernel::corner::CornerShape;
@@ -649,7 +649,7 @@ impl App {
                     let has = !d.sketch.is_empty();
                     group(ui, "Typ", |ui| {
                         large(ui, Icon::Body, "Volumen", has, true).on_hover_text("Ein Volumen-Profil erzeugen");
-                        large(ui, Icon::FillSurf, "Fläche", false, false).on_hover_text("Flächen-Profile werden in Freo nicht unterstützt");
+                        large(ui, Icon::FillSurf, "Fläche", false, false).on_hover_text("Flächen-Profile werden in SolidWork nicht unterstützt");
                     });
                     group(ui, "Tiefe", |ui| {
                         stack(ui, |ui| {
@@ -1730,7 +1730,7 @@ impl App {
                             labeled(ui, "Körper", |ui| {
                                 ui.label("Körper 1 (Standardkörper)");
                             });
-                            ui.label(RichText::new("Freo modelliert jedes Teil als einen Körper.").size(11.0).color(LABEL));
+                            ui.label(RichText::new("SolidWork modelliert jedes Teil als einen Körper.").size(11.0).color(LABEL));
                         }
                         ("Optionen", FeatureKind::Extrude(d)) => {
                             egui::Grid::new("extopts").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
@@ -2506,7 +2506,7 @@ impl App {
                             ui.label(RichText::new("Referenz").size(13.5));
                         });
                         collector(ui, &orient.as_ref().map(|o| o.0.clone()).unwrap_or_default(), false, 300.0)
-                            .on_hover_text("Standardreferenz: Freo richtet die Skizze nach der Standardbezugsebene aus");
+                            .on_hover_text("Standardreferenz: SolidWork richtet die Skizze nach der Standardbezugsebene aus");
                         ui.end_row();
                         ui.horizontal(|ui| {
                             ui.add_space(12.0);

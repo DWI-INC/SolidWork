@@ -335,7 +335,7 @@ impl App {
             "findmodels" => {
                 self.go_home();
                 let d = std::env::temp_dir().join("freo_demo_find");
-                for f in ["SD-Karte/HTL/bad-organizer-1.prt", "SD-Karte/HTL/raspberry-pi-holder.prt.3", "Downloads/tray0001.asm", "Downloads/halter.stp", "freo-work/flansch.pfprt"]
+                for f in ["SD-Karte/HTL/bad-organizer-1.prt", "SD-Karte/HTL/raspberry-pi-holder.prt.3", "Downloads/tray0001.asm", "Downloads/halter.stp", "solidwork-work/flansch.pfprt"]
                 {
                     let p = d.join(f);
                     let _ = std::fs::create_dir_all(p.parent().unwrap());
@@ -344,11 +344,11 @@ impl App {
                 self.open_in(None);
                 if let Some(o) = &mut self.creo.open {
                     let files =
-                        ["SD-Karte/HTL/bad-organizer-1.prt", "SD-Karte/HTL/raspberry-pi-holder.prt.3", "Downloads/tray0001.asm", "Downloads/halter.stp", "freo-work/flansch.pfprt"]
+                        ["SD-Karte/HTL/bad-organizer-1.prt", "SD-Karte/HTL/raspberry-pi-holder.prt.3", "Downloads/tray0001.asm", "Downloads/halter.stp", "solidwork-work/flansch.pfprt"]
                             .iter()
                             .map(|f| d.join(f))
                             .collect();
-                    o.found = Some(("Creo-, STEP- und Freo-Dateien auf diesem Mac".into(), files));
+                    o.found = Some(("Creo-, STEP- und SolidWork-Dateien auf diesem Mac".into(), files));
                     o.selected = Some(d.join("SD-Karte/HTL/bad-organizer-1.prt"));
                     o.name = "bad-organizer-1.prt".into();
                 }

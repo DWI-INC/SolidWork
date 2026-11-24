@@ -1902,7 +1902,7 @@ impl App {
             }
             h += "</table>";
         }
-        h += "<p style=\"color:#888;margin-top:30px\">Erzeugt mit Freo Live-Simulation (Voxel-Finite-Elemente bzw. Lattice-Boltzmann).</p></body></html>";
+        h += "<p style=\"color:#888;margin-top:30px\">Erzeugt mit SolidWork Live-Simulation (Voxel-Finite-Elemente bzw. Lattice-Boltzmann).</p></body></html>";
         let p = self.sim_file("html");
         match std::fs::write(&p, h) {
             Ok(_) => self.say(format!("Simulationsbericht gespeichert: {}", p.display()), MsgKind::Success),
@@ -2008,7 +2008,7 @@ impl App {
     /// Studie ▸ Vorhandene Simulation importieren: the studies of another part file.
     fn sim_import(&mut self) {
         let dir = self.save_dir(self.path.as_ref());
-        let Some(p) = rfd::FileDialog::new().set_title("Vorhandene Simulation importieren").set_directory(dir).add_filter("Freo-Teil", &["pfprt"]).pick_file() else { return };
+        let Some(p) = rfd::FileDialog::new().set_title("Vorhandene Simulation importieren").set_directory(dir).add_filter("SolidWork-Teil", &["pfprt"]).pick_file() else { return };
         let other = match std::fs::read_to_string(&p).map_err(|e| e.to_string()).and_then(|s| serde_json::from_str::<ModelData>(&s).map_err(|e| e.to_string())) {
             Ok(d) => d,
             Err(e) => {

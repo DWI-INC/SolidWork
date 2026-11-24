@@ -60,14 +60,14 @@ jobs:
           rpm -qp --requires dist/*.rpm
           file dist/*.AppImage
           sudo apt-get install -y ./dist/*.deb
-          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}' | freo-mcp | head -c 400
-          ldd /usr/bin/freo | grep -i "not found" && exit 1 || true
+          printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}' | solidwork-mcp | head -c 400
+          ldd /usr/bin/solidwork | grep -i "not found" && exit 1 || true
       - name: Start the app once (virtual display)
         id: gui
         continue-on-error: true
         run: |
           sudo apt-get install -y --no-install-recommends xvfb xauth libgl1-mesa-dri libegl1 libxcursor1 libxi6 libxrandr2 libxkbcommon-x11-0
-          xvfb-run -a -s "-screen 0 1600x1000x24" env LIBGL_ALWAYS_SOFTWARE=1 FREO_DEMO=bracket FREO_SHOT="$PWD/linux-start.png" FREO_EXIT=1 timeout 180 freo
+          xvfb-run -a -s "-screen 0 1600x1000x24" env LIBGL_ALWAYS_SOFTWARE=1 FREO_DEMO=bracket FREO_SHOT="$PWD/linux-start.png" FREO_EXIT=1 timeout 180 solidwork
           test -s linux-start.png
       - name: Start the AppImage once (virtual display)
         id: appimage
@@ -78,7 +78,7 @@ jobs:
           test -s appimage-start.png
       - uses: actions/upload-artifact@v4
         with:
-          name: freo-linux-${{ matrix.arch }}
+          name: solidwork-linux-${{ matrix.arch }}
           path: dist/*
       - name: Attach to the release
         if: github.event_name == 'release' || inputs.tag != ''
@@ -125,27 +125,27 @@ jobs:
           for pair in "aarch64-apple-darwin:arm64" "x86_64-apple-darwin:x64"; do
             target=${pair%%:*}; name=${pair##*:}
             BIN_DIR=target/$target/release ICON_TOOL=target/aarch64-apple-darwin/release/make_icon ./scripts/bundle.sh
-            lipo -archs Freo.app/Contents/MacOS/freo
-            codesign --force --deep -s - Freo.app
-            rm -rf stage && mkdir stage && cp -R Freo.app stage/ && ln -s /Applications stage/Applications
-            hdiutil create -quiet -volname "Freo $VERSION" -srcfolder stage -ov -format UDZO "dist/Freo-$VERSION-macos-$name.dmg"
+            lipo -archs SolidWork.app/Contents/MacOS/solidwork
+            codesign --force --deep -s - SolidWork.app
+            rm -rf stage && mkdir stage && cp -R SolidWork.app stage/ && ln -s /Applications stage/Applications
+            hdiutil create -quiet -volname "SolidWork $VERSION" -srcfolder stage -ov -format UDZO "dist/SolidWork-$VERSION-macos-$name.dmg"
             # the bare programs for the terminal and for MCP clients
-            mkdir -p "freo-$VERSION-macos-$name" && cp target/$target/release/freo target/$target/release/freo-mcp README.md "freo-$VERSION-macos-$name/"
-            tar -czf "dist/freo-$VERSION-macos-$name.tar.gz" "freo-$VERSION-macos-$name"
+            mkdir -p "solidwork-$VERSION-macos-$name" && cp target/$target/release/solidwork target/$target/release/solidwork-mcp README.md "solidwork-$VERSION-macos-$name/"
+            tar -czf "dist/solidwork-$VERSION-macos-$name.tar.gz" "solidwork-$VERSION-macos-$name"
           done
           ls -la dist
       - name: Start the app once
         id: gui
         continue-on-error: true
         run: |
-          FREO_DEMO=bracket FREO_SHOT="$PWD/macos-start.png" FREO_EXIT=1 target/aarch64-apple-darwin/release/freo &
+          FREO_DEMO=bracket FREO_SHOT="$PWD/macos-start.png" FREO_EXIT=1 target/aarch64-apple-darwin/release/solidwork &
           pid=$!
           for i in $(seq 1 60); do test -s macos-start.png && break; sleep 2; done
           kill $pid 2>/dev/null || true
           test -s macos-start.png
       - uses: actions/upload-artifact@v4
         with:
-          name: freo-macos
+          name: solidwork-macos
           path: dist/*
       - name: Attach to the release
         if: github.event_name == 'release' || inputs.tag != ''
@@ -193,10 +193,10 @@ jobs:
           foreach ($pair in @(@('i686-pc-windows-msvc', 'x86'), @('x86_64-pc-windows-msvc', 'x64'), @('aarch64-pc-windows-msvc', 'arm64'))) {
             $target = $pair[0]; $name = $pair[1]
             # the app as one file, and a zip that also holds the MCP server
-            Copy-Item "target/$target/release/freo.exe" "dist/Freo-$version-windows-$name.exe"
-            $dir = "freo-$version-windows-$name"
+            Copy-Item "target/$target/release/solidwork.exe" "dist/SolidWork-$version-windows-$name.exe"
+            $dir = "solidwork-$version-windows-$name"
             New-Item -ItemType Directory -Force $dir | Out-Null
-            Copy-Item "target/$target/release/freo.exe", "target/$target/release/freo-mcp.exe", "README.md" $dir
+            Copy-Item "target/$target/release/solidwork.exe", "target/$target/release/solidwork-mcp.exe", "README.md" $dir
             Compress-Archive -Path $dir -DestinationPath "dist/$dir.zip" -Force
           }
           Get-ChildItem dist
@@ -207,7 +207,7 @@ jobs:
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
           foreach ($pair in @(@('i686-pc-windows-msvc', 'x86'), @('x86_64-pc-windows-msvc', 'x64'), @('aarch64-pc-windows-msvc', 'arm64'))) {
-            & $iscc /Q "/DVersion=$version" "/DArch=$($pair[1])" "/DSourceDir=$PWD\target\$($pair[0])\release" "/DOutputDir=$PWD\dist" packaging\windows\freo.iss
+            & $iscc /Q "/DVersion=$version" "/DArch=$($pair[1])" "/DSourceDir=$PWD\target\$($pair[0])\release" "/DOutputDir=$PWD\dist" packaging\windows\solidwork.iss
             if ($LASTEXITCODE -ne 0) { throw "installer for $($pair[1]) failed" }
           }
           Get-ChildItem dist\*-setup.exe
@@ -215,23 +215,23 @@ jobs:
         shell: pwsh
         run: |
           $setup = Get-ChildItem dist\*-windows-x64-setup.exe | Select-Object -First 1
-          $dir = "$env:RUNNER_TEMP\FreoTest"
+          $dir = "$env:RUNNER_TEMP\SolidWorkTest"
           Start-Process $setup.FullName -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/CURRENTUSER", "/DIR=$dir", "/TASKS=assoc" -Wait
-          if (-not (Test-Path "$dir\freo.exe")) { throw "freo.exe was not installed" }
-          if (-not (Test-Path "$dir\freo-mcp.exe")) { throw "freo-mcp.exe was not installed" }
+          if (-not (Test-Path "$dir\solidwork.exe")) { throw "solidwork.exe was not installed" }
+          if (-not (Test-Path "$dir\solidwork-mcp.exe")) { throw "solidwork-mcp.exe was not installed" }
           $assoc = (Get-ItemProperty "HKCU:\Software\Classes\.pfprt" -ErrorAction SilentlyContinue).'(default)'
-          if ($assoc -ne "Freo.Part") { throw ".pfprt is not associated with Freo ($assoc)" }
-          '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}' | & "$dir\freo-mcp.exe" | Select-Object -First 1
+          if ($assoc -ne "SolidWork.Part") { throw ".pfprt is not associated with SolidWork ($assoc)" }
+          '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}' | & "$dir\solidwork-mcp.exe" | Select-Object -First 1
           Start-Process "$dir\unins000.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES" -Wait
           Start-Sleep -Seconds 3
-          if (Test-Path "$dir\freo.exe") { throw "freo.exe is still there after uninstalling" }
+          if (Test-Path "$dir\solidwork.exe") { throw "solidwork.exe is still there after uninstalling" }
           "installed, associated and uninstalled"
       - name: Check the MCP server
         shell: bash
-        run: printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}' | target/x86_64-pc-windows-msvc/release/freo-mcp.exe | head -c 400
+        run: printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}' | target/x86_64-pc-windows-msvc/release/solidwork-mcp.exe | head -c 400
       - uses: actions/upload-artifact@v4
         with:
-          name: freo-windows
+          name: solidwork-windows
           path: dist/*
       - name: Attach to the release
         if: github.event_name == 'release' || inputs.tag != ''

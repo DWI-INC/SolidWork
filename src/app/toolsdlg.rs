@@ -548,7 +548,7 @@ fn find_bar(ui: &mut egui::Ui, find: &mut Option<String>, hits: usize) {
 
 impl App {
     pub(super) fn todo(&mut self, name: &str) {
-        self.say(format!("„{}“ ist in Freo noch nicht verfügbar.", name.trim_end_matches("...")), MsgKind::Info);
+        self.say(format!("„{}“ ist in SolidWork noch nicht verfügbar.", name.trim_end_matches("...")), MsgKind::Info);
     }
 
     /// Folder of the model file, or the working directory for a model that was never saved.
@@ -755,7 +755,7 @@ impl App {
             "Deklarieren" => self.say("Deklarieren: In dieser Sitzung ist kein Notizbuch geöffnet, dem das Modell zugeordnet werden kann.", MsgKind::Warning),
             "Nach Geometrie" => {
                 let Some(p) =
-                    rfd::FileDialog::new().set_title("Teil für den Geometrievergleich wählen").set_directory(self.work_dir()).add_filter("Freo-Teil", &["pfprt"]).pick_file()
+                    rfd::FileDialog::new().set_title("Teil für den Geometrievergleich wählen").set_directory(self.work_dir()).add_filter("SolidWork-Teil", &["pfprt"]).pick_file()
                 else {
                     return;
                 };

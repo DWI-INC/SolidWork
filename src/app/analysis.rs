@@ -953,7 +953,7 @@ impl App {
                 self.tab = Tab::LiveSim;
                 self.say("Live-Simulation: eine Studie anlegen und „Simulieren“ wählen.", MsgKind::Prompt);
             }
-            n => self.say(format!("„{}“ ist in Freo noch nicht verfügbar.", n), MsgKind::Info),
+            n => self.say(format!("„{}“ ist in SolidWork noch nicht verfügbar.", n), MsgKind::Info),
         }
     }
 
@@ -961,7 +961,7 @@ impl App {
     /// an import feature of this part (merged into the current body).
     pub fn merge_inherit(&mut self) {
         let Some(p) =
-            rfd::FileDialog::new().set_title("Zusammenführung/Vererbung: Referenzmodell wählen").set_directory(self.work_dir()).add_filter("Freo-Teil", &["pfprt"]).pick_file()
+            rfd::FileDialog::new().set_title("Zusammenführung/Vererbung: Referenzmodell wählen").set_directory(self.work_dir()).add_filter("SolidWork-Teil", &["pfprt"]).pick_file()
         else {
             return;
         };
@@ -1017,7 +1017,7 @@ impl App {
         });
     }
 
-    /// Modell ▸ Editieren ▸ Flächen vereinigen: Freo keeps faces with the same geometry as one
+    /// Modell ▸ Editieren ▸ Flächen vereinigen: SolidWork keeps faces with the same geometry as one
     /// face when it regenerates, so the command regenerates and reports the result.
     pub fn unite_faces(&mut self) {
         let before = self.result.topo.faces.len();

@@ -1,4 +1,4 @@
-//! 3D-Druck: the slicer inside Freo. A ribbon tab with printer, filament and quality, the part
+//! 3D-Druck: the slicer inside SolidWork. A ribbon tab with printer, filament and quality, the part
 //! on the printer's build plate (lay flat, turn, copies), slicing in the background, a preview
 //! of the printed part in the filament's colour (or by feature, speed, flow, fan, …) with a
 //! layer and a move slider, statistics, and the G-code export.
@@ -218,7 +218,7 @@ fn rgbf(c: [u8; 3]) -> [f32; 3] {
     [c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0]
 }
 
-/// Printer frame → Freo world (Y up).
+/// Printer frame → SolidWork world (Y up).
 fn w(p: DVec3) -> [f32; 3] {
     let q = smesh::printer_to_world(p);
     [q.x as f32, q.y as f32, q.z as f32]

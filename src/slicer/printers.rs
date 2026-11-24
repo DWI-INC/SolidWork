@@ -151,7 +151,7 @@ M400
 const M1_LAYER: &str = "G92 E0\n{if layer_num==2}\n;filter_fan\nM106 P3 S{during_print_exhaust_fan_speed[0]*255/100.0}\n;auxiliary_fan\nM106 P2 S{additional_cooling_fan_speed[0]*255/100.0}\n{endif}\n";
 
 /// Plain start G-code: heat, home, prime line along the front edge.
-const GENERIC_START: &str = r#"; ---- Freo start G-code ----
+const GENERIC_START: &str = r#"; ---- SolidWork start G-code ----
 G90 ; absolute positioning
 M83 ; relative extrusion
 M140 S[bed_temperature_initial_layer_single] ; bed temperature
@@ -170,7 +170,7 @@ G92 E0
 G1 Z1 F600
 "#;
 
-const DELTA_START: &str = r#"; ---- Freo start G-code (delta) ----
+const DELTA_START: &str = r#"; ---- SolidWork start G-code (delta) ----
 G90 ; absolute positioning
 M83 ; relative extrusion
 M140 S[bed_temperature_initial_layer_single]
@@ -187,7 +187,7 @@ G92 E0
 G1 Z1 F600
 "#;
 
-const GENERIC_END: &str = r#"; ---- Freo end G-code ----
+const GENERIC_END: &str = r#"; ---- SolidWork end G-code ----
 G91 ; relative positioning
 G1 E-2 F2400 ; retract
 G1 Z{min(10, printable_height-max_layer_z)} F600 ; lift

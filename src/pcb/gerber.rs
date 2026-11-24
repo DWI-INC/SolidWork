@@ -75,13 +75,13 @@ struct G {
 impl G {
     fn new(function: &str, name: &str) -> G {
         let mut head = String::new();
-        let _ = writeln!(head, "%TF.GenerationSoftware,Freo,PCB,{}*%", env!("CARGO_PKG_VERSION"));
+        let _ = writeln!(head, "%TF.GenerationSoftware,SolidWork,PCB,{}*%", env!("CARGO_PKG_VERSION"));
         let _ = writeln!(head, "%TF.ProjectId,{},00000000-0000-0000-0000-000000000000,1*%", name.replace(',', "_"));
         let _ = writeln!(head, "%TF.SameCoordinates,Original*%");
         let _ = writeln!(head, "%TF.FileFunction,{}*%", function);
         let _ = writeln!(head, "%TF.FilePolarity,Positive*%");
         let _ = writeln!(head, "%FSLAX46Y46*%");
-        let _ = writeln!(head, "G04 Gerber RS-274X, erzeugt von Freo*");
+        let _ = writeln!(head, "G04 Gerber RS-274X, erzeugt von SolidWork*");
         let _ = writeln!(head, "%MOMM*%");
         let _ = writeln!(head, "%LPD*%");
         let _ = writeln!(head, "G01*");
@@ -281,7 +281,7 @@ fn excellon(holes: &[(f64, P, P)], plated: bool) -> String {
     tools.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let mut s = String::new();
     let _ = writeln!(s, "M48");
-    let _ = writeln!(s, "; DRILL file {{Freo {}}}", env!("CARGO_PKG_VERSION"));
+    let _ = writeln!(s, "; DRILL file {{SolidWork {}}}", env!("CARGO_PKG_VERSION"));
     let _ = writeln!(s, "; FORMAT={{-:-/ absolute / metric / decimal}}");
     let _ = writeln!(s, "; #@! TF.FileFunction,{},1,2,{}", if plated { "Plated" } else { "NonPlated" }, if plated { "PTH" } else { "NPTH" });
     let _ = writeln!(s, "FMAT,2");
