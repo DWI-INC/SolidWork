@@ -8,6 +8,7 @@
 
 pub mod autoroute;
 pub mod board;
+pub mod bench;
 pub mod body3d;
 pub mod bom;
 pub mod demo;
@@ -19,6 +20,7 @@ pub mod gerber;
 pub mod kicad;
 pub mod model3d;
 pub mod models;
+pub mod modules;
 pub mod route;
 pub mod stroke;
 pub mod schematic;

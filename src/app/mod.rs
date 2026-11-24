@@ -4,6 +4,7 @@ pub mod analysis;
 pub mod annot3d;
 pub mod artarget;
 pub mod assembly;
+pub mod assembler;
 pub mod camera;
 pub mod cnc;
 pub mod pcb;
@@ -469,11 +470,15 @@ impl App {
         }
         let t = &r.topo;
         // assembly components carry their own colour; parts are tinted by the frame colour
-        let colors = self.asm_view().map(|v| v.body_colors.clone()).unwrap_or_default();
+        let asm = self.asm_view();
         let mut solid = Vec::with_capacity(t.polys.len() * 27);
         for (pi, p) in t.polys.iter().enumerate() {
             let body = (t.tags[pi] >> crate::kernel::topology::BODY_SHIFT) as usize;
-            let c = body.checked_sub(1).and_then(|b| colors.get(b)).copied().unwrap_or([1.0; 3]);
+            let c = if let Some(asm) = asm {
+                asm.surface_colors.get(&t.tags[pi]).or_else(|| body.checked_sub(1).and_then(|b| asm.body_colors.get(b))).copied().unwrap_or([1.0; 3])
+            } else if !self.data.feature_colors.is_empty() {
+                r.tag_owner.get(&t.tags[pi]).and_then(|id| self.data.feature_colors.get(id)).copied().unwrap_or(self.data.appearance.color)
+            } else { [1.0; 3] };
             for k in 1..p.len() - 1 {
                 let tri = [0, k, k + 1].map(|j| (t.positions[p[j]], t.vnormals[pi][j]));
                 // a threaded stretch of a hole or shaft shows its turns instead of the smooth wall

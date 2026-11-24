@@ -73,6 +73,11 @@ impl App {
         let size = self.viewport_size;
         let r = self.displayed();
         let target = self.editor.as_ref().and_then(|e| e.pick);
+        let guide_owner = self.placement_guide().and_then(|g| {
+            let id = self.place_editor()?.comp.id;
+            let body = self.asm_view()?.bodies.iter().position(|comp| *comp == id)? + 1;
+            Some((body, g.choosing_source()))
+        });
         let (want_face, want_edge, want_plane, want_axis, want_point) = match target {
             Some(PickTarget::SketchPlane) | Some(PickTarget::Plane) | Some(PickTarget::DepthRef) | Some(PickTarget::HoleOffsetX) | Some(PickTarget::HoleOffsetY) | Some(PickTarget::HoleAngleRef) | Some(PickTarget::HoleOrient) => {
                 (true, false, true, false, false)
@@ -84,6 +89,7 @@ impl App {
             Some(PickTarget::Axis) => (false, false, false, true, false),
             Some(PickTarget::Direction) => (false, false, true, true, false),
             Some(PickTarget::Features) => (true, true, false, false, false),
+            None if self.assembler_workspace() => (true, false, false, false, false),
             None if self.sim_picking() => (true, false, false, false, false),
             None => match self.filter {
                 Filter::Smart | Filter::Feature => (true, true, true, true, true),
@@ -99,6 +105,10 @@ impl App {
         let mut best_t = f64::INFINITY;
         let mut best_face = None;
         for (pi, p) in t.polys.iter().enumerate() {
+            if let Some((moving, source)) = guide_owner {
+                let body = (t.tags[pi] >> crate::kernel::topology::BODY_SHIFT) as usize;
+                if (source && body != moving) || (!source && body >= moving) { continue; }
+            }
             for k in 1..p.len() - 1 {
                 if let Some(tt) = ray_tri(o, d, t.positions[p[0]], t.positions[p[k]], t.positions[p[k + 1]]) {
                     if tt < best_t {

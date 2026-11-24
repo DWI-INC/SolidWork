@@ -5,9 +5,9 @@
 
 use super::features::*;
 use super::regen::{self, AxisInfo, Cosmetic, CurveInfo, PlaneInfo, PointInfo, RegenResult};
-use crate::kernel::csg::{self, CPolygon};
+use crate::kernel::csg::{self, CPlane, CPolygon};
 use crate::kernel::math::*;
-use crate::kernel::topology::{Topology, BODY_SHIFT};
+use crate::kernel::topology::{EdgeChain, TopoFace, Topology, BODY_SHIFT};
 use glam::{DMat3, DQuat};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -126,6 +126,8 @@ pub enum AsmRef {
     Axis { comp: u64, id: u64 },
     /// datum point of a component's part
     Point { comp: u64, id: u64 },
+    /// A point picked on a component, stored in its local coordinates.
+    Contact { comp: u64, face: FaceRef, point: V3 },
     /// straight edge of a component
     Edge { comp: u64, a: V3, b: V3 },
 }
@@ -134,7 +136,7 @@ impl AsmRef {
     pub fn comp(&self) -> Option<u64> {
         match *self {
             AsmRef::AsmPlane(_) => None,
-            AsmRef::Surface { comp, .. } | AsmRef::Plane { comp, .. } | AsmRef::Axis { comp, .. } | AsmRef::Point { comp, .. } | AsmRef::Edge { comp, .. } => Some(comp),
+            AsmRef::Surface { comp, .. } | AsmRef::Plane { comp, .. } | AsmRef::Axis { comp, .. } | AsmRef::Point { comp, .. } | AsmRef::Contact { comp, .. } | AsmRef::Edge { comp, .. } => Some(comp),
         }
     }
 }
@@ -204,6 +206,9 @@ pub struct PartEntry {
     /// part file the component was assembled from (saved back when modified)
     #[serde(default)]
     pub source: Option<PathBuf>,
+    /// Routed board as inserted, used by the GPIO bench after reopening the assembly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub board: Option<Arc<crate::pcb::Board>>,
     #[serde(skip)]
     pub modified: bool,
 }
@@ -242,7 +247,7 @@ impl AssemblyData {
     pub fn add_part(&mut self, data: ModelData, source: Option<PathBuf>) -> String {
         let name = data.name.clone();
         if self.part(&name).is_none() {
-            self.parts.push(PartEntry { data, source, modified: false });
+            self.parts.push(PartEntry { data, source, modified: false, board: None });
         }
         name
     }
@@ -331,6 +336,10 @@ pub fn local_geo(r: &AsmRef, part: &RegenResult) -> Option<Geo> {
         AsmRef::Plane { id, .. } => part.plane(id).map(|p| Geo::Plane { p: p.frame.origin, n: p.frame.z() }),
         AsmRef::Axis { id, .. } => part.axis(id).map(|a| Geo::Line { p: a.point, d: a.dir }),
         AsmRef::Point { id, .. } => part.points.iter().find(|q| q.id == id).map(|q| Geo::Point(q.p)),
+        AsmRef::Contact { face, point, .. } => {
+            let plane = &t.faces[t.match_face(face.point, face.normal)?];
+            Some(Geo::Point(point + plane.normal * (plane.center - point).dot(plane.normal)))
+        }
         AsmRef::Edge { a, b, .. } => Some(Geo::Line { p: a, d: safe_norm(b - a, V3::X) }),
     }
 }
@@ -655,6 +664,7 @@ pub struct AsmResult {
     /// body index (tag >> BODY_SHIFT) - 1 → component id
     pub bodies: Vec<u64>,
     pub body_colors: Vec<[f32; 3]>,
+    pub surface_colors: HashMap<u32, [f32; 3]>,
     pub messages: Vec<String>,
 }
 
@@ -759,6 +769,49 @@ pub fn place_component(
     (pl, st, signs)
 }
 
+/// A placement is rigid and components never weld to each other. Reuse the cached
+/// faces and edge chains so dragging a drilled PCB doesn't rebuild its topology.
+fn append_component_topology(dst: &mut Topology, src: &Topology, pl: &Placement, body: u32) {
+    let (vertex_base, poly_base, face_base) = (dst.positions.len(), dst.polys.len(), dst.faces.len());
+    let rotate = |v: &[V3]| v.iter().map(|&n| pl.vector(n)).collect::<Vec<_>>();
+    for &p in &src.positions {
+        let q = pl.point(p);
+        dst.positions.push(q);
+        dst.bbox.add(q);
+    }
+    dst.polys.extend(src.polys.iter().map(|p| p.iter().map(|v| vertex_base + v).collect()));
+    dst.vnormals.extend(src.vnormals.iter().map(|v| rotate(v)));
+    dst.planes.extend(src.planes.iter().map(|p| {
+        let n = pl.vector(p.n);
+        CPlane { n, w: p.w + n.dot(pl.pos) }
+    }));
+    dst.tags.extend(src.tags.iter().map(|tag| body | (tag & ((1 << BODY_SHIFT) - 1))));
+    dst.poly_face.extend(src.poly_face.iter().map(|i| face_base + i));
+    dst.faces.extend(src.faces.iter().map(|f| {
+        let normal = pl.vector(f.normal);
+        TopoFace {
+            polys: f.polys.iter().map(|i| poly_base + i).collect(),
+            planar: f.planar,
+            normal,
+            offset: f.offset + normal.dot(pl.pos),
+            area: f.area,
+            center: pl.point(f.center),
+        }
+    }));
+    dst.draw_edges.extend(src.draw_edges.iter().map(|(a, b)| (a + vertex_base, b + vertex_base)));
+    dst.chains.extend(src.chains.iter().map(|e| EdgeChain {
+        points: e.points.iter().map(|&p| pl.point(p)).collect(),
+        closed: e.closed,
+        face_a: face_base + e.face_a,
+        face_b: face_base + e.face_b,
+        n_a: rotate(&e.n_a),
+        n_b: rotate(&e.n_b),
+        f_a: rotate(&e.f_a),
+        f_b: rotate(&e.f_b),
+        convex: e.convex,
+    }));
+}
+
 /// Regenerates every part, solves the placements in order and builds the merged display.
 pub fn regen(asm: &AssemblyData, cache: &mut PartCache, opts: &RegenOpts) -> AsmResult {
     let t0 = std::time::Instant::now();
@@ -811,6 +864,7 @@ pub fn regen(asm: &AssemblyData, cache: &mut PartCache, opts: &RegenOpts) -> Asm
     d.planes = res.skeleton.planes.clone();
     d.points = res.skeleton.points.clone();
     let mut polys: Vec<CPolygon> = vec![];
+    let mut topology = Topology::default();
     for c in comps.iter().filter(|c| !c.suppressed) {
         let (Some(part), Some(pl)) = (res.parts.get(&c.part), res.shown.get(&c.id)) else { continue };
         for (fid, e) in &part.errors {
@@ -824,6 +878,14 @@ pub fn regen(asm: &AssemblyData, cache: &mut PartCache, opts: &RegenOpts) -> Asm
         }
         let body = (res.bodies.len() as u32) << BODY_SHIFT;
         let x = pl.xform();
+        append_component_topology(&mut topology, &part.topo, pl, body);
+        if let Some(entry) = asm.part(&c.part).filter(|p| !p.data.feature_colors.is_empty()) {
+            for (&tag, feature) in &part.tag_owner {
+                if let Some(color) = entry.data.feature_colors.get(feature) {
+                    res.surface_colors.insert(body | (tag & ((1 << BODY_SHIFT) - 1)), *color);
+                }
+            }
+        }
         for p in &part.polys {
             let mut q = p.transformed(&x);
             q.tag = body | (p.tag & ((1 << BODY_SHIFT) - 1));
@@ -851,7 +913,7 @@ pub fn regen(asm: &AssemblyData, cache: &mut PartCache, opts: &RegenOpts) -> Asm
             d.cosmetics.push(Cosmetic { feature: c.id, base: pl.point(co.base), dir: pl.vector(co.dir), ..co.clone() });
         }
     }
-    d.topo = Arc::new(Topology::new(&polys));
+    d.topo = Arc::new(topology);
     d.polys = polys;
     d.time = t0.elapsed().as_secs_f64();
     d.generation = regen::next_generation();
@@ -954,6 +1016,7 @@ pub fn ref_name(r: &AsmRef, asm: &AssemblyData, editing: Option<&Component>, res
         AsmRef::Plane { id, .. } => format!("{}:{}", part.and_then(|p| p.data.feature(id)).map(|f| f.name.clone()).unwrap_or("Ebene".into()), part_name),
         AsmRef::Axis { id, .. } => format!("{}:{}", pres.and_then(|r| r.axis(id)).map(|a| a.name.clone()).unwrap_or("Achse".into()), part_name),
         AsmRef::Point { id, .. } => format!("{}:{}", pres.and_then(|r| r.points.iter().find(|q| q.id == id)).map(|q| q.name.clone()).unwrap_or("Punkt".into()), part_name),
+        AsmRef::Contact { .. } => format!("Kontaktpunkt · {part_name}"),
         AsmRef::Edge { .. } => format!("Kante:{}", part_name),
     }
 }

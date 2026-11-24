@@ -619,7 +619,7 @@ impl BrowsePurpose {
             BrowsePurpose::SaveAs(SaveKind::Part) => vec!["pfprt".into()],
             BrowsePurpose::SaveAs(SaveKind::Assembly) => vec!["pfasm".into()],
             BrowsePurpose::SaveAs(SaveKind::Drawing) => vec!["pfdrw".into()],
-            BrowsePurpose::Assemble => vec!["pfprt".into(), "json".into()],
+            BrowsePurpose::Assemble => ["pfprt", "json", "step", "stp", "p21", "stl", "obj"].map(String::from).to_vec(),
             BrowsePurpose::DrawingModel => vec!["pfprt".into(), "pfasm".into()],
             BrowsePurpose::BomCsv(_) => vec!["csv".into()],
             BrowsePurpose::DrawingExport(k) => vec![k.clone()],
@@ -628,7 +628,8 @@ impl BrowsePurpose {
     fn type_label(&self) -> String {
         match self {
             BrowsePurpose::WorkDir => "Ordner".into(),
-            BrowsePurpose::SaveAs(SaveKind::Part) | BrowsePurpose::Assemble => "SolidWork-Teil (.pfprt)".into(),
+            BrowsePurpose::Assemble => "Teil (SolidWork, STEP, STL, OBJ)".into(),
+            BrowsePurpose::SaveAs(SaveKind::Part) => "SolidWork-Teil (.pfprt)".into(),
             BrowsePurpose::SaveAs(SaveKind::Assembly) => "SolidWork-Baugruppe (.pfasm)".into(),
             BrowsePurpose::SaveAs(SaveKind::Drawing) => "SolidWork-Zeichnung (.pfdrw)".into(),
             BrowsePurpose::DrawingModel => "SolidWork-Modelle (.pfprt, .pfasm)".into(),
@@ -763,11 +764,11 @@ impl App {
     }
 
     pub fn home_ribbon(&mut self, ui: &mut egui::Ui) {
+        self.assembler_group(ui);
         group(ui, "Daten", |ui| {
             if large(ui, Icon::New, "Neu", true, false).clicked() {
                 self.confirm_new();
             }
-            self.assembler_button(ui);
             if large(ui, Icon::Open, "Öffnen", true, false).clicked() {
                 self.open();
             }

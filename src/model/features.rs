@@ -1558,6 +1558,9 @@ pub struct ModelData {
     pub relations: String,
     pub next_id: u64,
     pub appearance: Appearance,
+    /// Material colours of imported component features in a populated board.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub feature_colors: std::collections::BTreeMap<u64, [f32; 3]>,
     /// kg/mm³
     pub density: f64,
     pub insert_index: Option<usize>,
@@ -1730,6 +1733,7 @@ impl ModelData {
             published: vec![],
             next_id: 10,
             appearance: Appearance::default(),
+            feature_colors: Default::default(),
             density: 7.85e-6,
             insert_index: None,
             family: FamilyTable::default(),

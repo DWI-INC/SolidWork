@@ -551,6 +551,23 @@ fn build() -> Vec<Footprint> {
         f = f.silk_rect(p(-4.37, -8.1), p(11.51, 9.0));
         v.push(f.bx(p(-4.27, -8.0), p(11.41, 8.9), 0.0, 13.3, STEEL).port("RJ45 (Ethernet)").done());
     }
+    for module in super::modules::MODULES {
+        let mut f = F::new(module.id(), module.description());
+        for (i, pin) in module.pins().iter().enumerate() {
+            let shape = if i == 0 { PadShape::Rect } else { PadShape::Circle };
+            f = f.pad(&pin.number, pin.pos, p(1.7, 1.7), shape, 1.0);
+        }
+        for &(x, y) in module.mounts() {
+            f = f.npth(p(x, y), 2.7);
+        }
+        let (lo, hi, z0, z1) = match module {
+            super::modules::Module::Esp32 => (p(0.0, -6.04), p(27.94, 49.3), 2.5, 8.0),
+            super::modules::Module::Pi4 => (P::ZERO, p(88.0, 57.3), -14.2, 3.4),
+        };
+        let mut fp = f.silk_rect(P::ZERO, module.size()).bx(lo, hi, z0, z1, GREEN_T).done();
+        fp.model = None;
+        v.push(fp);
+    }
     v
 }
 

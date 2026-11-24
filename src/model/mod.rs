@@ -3,6 +3,7 @@ pub mod drawing;
 pub mod drawing3d;
 pub mod expr;
 pub mod features;
+pub mod fastener;
 pub mod regen;
 pub mod sim;
 pub mod step_import;

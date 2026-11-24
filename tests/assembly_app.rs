@@ -174,18 +174,17 @@ fn assembler_is_reachable_from_home_and_tools() {
     let mut app = App::new(None);
     app.go_home();
     click_assembler(&mut app);
-    assert!(app.new_dialog.take().unwrap().assembly);
+    assert_eq!(app.tab, Tab::Tools);
+    assert!(app.asm.is_some() && app.new_dialog.is_none());
 
     app.new_part_named("TEST");
     app.tab = Tab::Tools;
     click_assembler(&mut app);
-    let dialog = app.new_dialog.take().unwrap();
-    assert!(dialog.assembly && !dialog.drawing && !dialog.idea);
-    assert_eq!(dialog.name, "asm0001");
+    assert!(app.asm.is_some() && app.new_dialog.is_none());
 
     app.new_assembly("EXISTING");
     app.tab = Tab::Tools;
     click_assembler(&mut app);
-    assert!(app.tab == Tab::Model && app.new_dialog.is_none());
+    assert!(app.tab == Tab::Tools && app.new_dialog.is_none());
     assert_eq!(app.asm.as_ref().unwrap().data.name, "EXISTING");
 }

@@ -684,6 +684,7 @@ fn build() -> Vec<Symbol> {
     flag.s.power = true;
     flag.s.pins[0].hidden = true;
     v.push(flag.done());
+    v.extend(super::modules::MODULES.map(|m| m.symbol()));
     for n in [2, 3, 4, 5, 6, 8, 10] {
         v.push(conn(n));
     }

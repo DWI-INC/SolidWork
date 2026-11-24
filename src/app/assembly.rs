@@ -20,6 +20,7 @@ pub enum Side {
 #[derive(Clone)]
 pub struct PlaceEditor {
     pub comp: Component,
+    pub(super) guide: Option<super::assembler::Guide>,
     pub is_new: bool,
     pub active: usize,
     pub status: PlaceStatus,
@@ -53,6 +54,9 @@ pub struct AsmSession {
     pub editing: Option<OpenPart>,
     pub show_bom: bool,
     pub interference: Option<Vec<(u64, u64, f64)>>,
+    pub assembler: super::assembler::Assembler,
+    // Part definition temporarily visible to the placement solver, committed with its instance.
+    staged_part: Option<String>,
 }
 
 impl AsmSession {
@@ -70,6 +74,8 @@ impl AsmSession {
             editing: None,
             show_bom: false,
             interference: None,
+            assembler: Default::default(),
+            staged_part: None,
         }
     }
 }
@@ -171,6 +177,8 @@ impl App {
 
     pub fn asm_regenerate(&mut self, announce: bool) {
         let Some(a) = &mut self.asm else { return };
+        a.interference = None;
+        a.assembler.bench = None;
         let factor = if a.exploded && a.place.is_none() { a.explode } else { 0.0 };
         a.res = am::regen(&a.data, &mut a.cache, &am::RegenOpts { explode: factor, editing: None });
         self.data = a.data.skeleton.clone();
@@ -314,27 +322,60 @@ impl App {
     }
 
     pub fn assemble_path(&mut self, p: PathBuf) {
-        let data = match std::fs::read_to_string(&p).map_err(|e| e.to_string()).and_then(|s| serde_json::from_str::<ModelData>(&s).map_err(|e| e.to_string())) {
-            Ok(d) => d,
-            Err(e) => {
-                self.say(format!("Teil konnte nicht gelesen werden: {}", e), MsgKind::Error);
+        if !self.in_asm() || self.placing() {
+            return;
+        }
+        if let Some(name) = self.asm.as_ref().and_then(|a| a.data.parts.iter().find(|entry| entry.source.as_ref() == Some(&p))).map(|part| part.data.name.clone()) {
+            self.assemble_part(&name);
+            return;
+        }
+        if super::creo::is_neutral_file(&p.to_string_lossy()) && !super::drawimport::is_drawing2d(&p.to_string_lossy()) {
+            match Self::read_neutral(&p) {
+                Ok((def, _, note)) => {
+                    let name = p.file_stem().unwrap_or_default().to_string_lossy();
+                    let mut data = ModelData::new_part_template(&name);
+                    data.features.push(Feature { id: data.next_id, name: "Import".into(), kind: FeatureKind::Import(def), hidden: false, suppressed: false });
+                    data.next_id += 1;
+                    self.say(note, MsgKind::Info);
+                    self.stage_part(data, None, None);
+                }
+                Err(e) => self.say(format!("Import fehlgeschlagen: {e}"), MsgKind::Error),
+            }
+            return;
+        }
+        match std::fs::read_to_string(&p).map_err(|e| e.to_string()).and_then(|s| serde_json::from_str::<ModelData>(&s).map_err(|e| e.to_string())) {
+            Ok(data) => self.stage_part(data, Some(p), None),
+            Err(e) => self.say(format!("Teil konnte nicht gelesen werden: {e}"), MsgKind::Error),
+        }
+    }
+
+    pub(super) fn stage_part(&mut self, mut data: ModelData, mut source: Option<PathBuf>, board: Option<Arc<crate::pcb::Board>>) {
+        if !self.in_asm() || self.placing() {
+            return;
+        }
+        let a = self.asm.as_mut().unwrap();
+        let base = data.name.clone();
+        for n in 1.. {
+            let Some(part) = a.data.part(&data.name) else { break };
+            if part.source == source && part.data == data && part.board == board {
+                self.assemble_part(&data.name);
                 return;
             }
-        };
-        let Some(a) = &mut self.asm else { return };
-        let name = data.name.clone();
-        let existing = a.data.part(&name).is_some();
-        if !existing {
-            a.data.add_part(data, Some(p.clone()));
+            // A local alias must never overwrite a differently named source file on save.
+            source = None;
+            data.name = format!("{base} ({})", n + 1);
         }
-        if existing {
-            self.say(format!("{} ist bereits in Sitzung; eine weitere Instanz wird zusammengebaut.", name), MsgKind::Info);
-        }
+        let name = a.data.add_part(data, source);
+        a.data.part_mut(&name).unwrap().board = board;
+        a.staged_part = Some(name.clone());
         self.assemble_part(&name);
     }
 
     /// Opens the placement dashboard for a new instance of `part`.
     pub fn assemble_part(&mut self, part: &str) {
+        if self.asm.as_ref().is_some_and(|a| a.assembler.active && a.exploded && a.place.is_none() && a.editing.is_none()) {
+            self.toggle_exploded();
+        }
         let Some(a) = &mut self.asm else { return };
         if a.place.is_some() || a.editing.is_some() {
             return;
@@ -372,12 +413,22 @@ impl App {
         }
         let iface_note = (!first && !iface.is_empty())
             .then(|| format!("Komponentenschnittstelle: {} Bedingung(en). Partner für „{}“ ({}) in der Baugruppe wählen.", iface.len(), iface[0].name, iface[0].ty.name()));
-        a.place = Some(PlaceEditor { comp, is_new: true, active: 0, status: PlaceStatus::Packaged, side: None });
+        self.fit_pending |= a.assembler.active;
+        a.place = Some(PlaceEditor { comp, guide: None, is_new: true, active: 0, status: PlaceStatus::Packaged, side: None });
         self.tab = Tab::Context;
         self.dash_panel = None;
         self.selection.clear();
         self.mini = None;
         self.place_update();
+        if self.asm.as_ref().is_some_and(|a| a.assembler.active) {
+            if first {
+                self.place_finish();
+                self.say(format!("{part} ist die Basis. Jetzt das nächste Teil hinzufügen."), MsgKind::Success);
+            } else {
+                self.start_placement_guide();
+            }
+            return;
+        }
         if first {
             self.say(format!("{} wird platziert: die erste Komponente liegt an der Standardposition. Zum Übernehmen OK klicken.", part), MsgKind::Prompt);
         } else {
@@ -430,7 +481,7 @@ impl App {
             comp.constraints.push(AsmConstraint::new(AsmCType::Automatic));
         }
         let part = comp.part.clone();
-        a.place = Some(PlaceEditor { comp, is_new: false, active, status: PlaceStatus::Packaged, side: None });
+        a.place = Some(PlaceEditor { comp, guide: None, is_new: false, active, status: PlaceStatus::Packaged, side: None });
         // placement is edited with the assembly put together
         self.tab = Tab::Context;
         self.dash_panel = None;
@@ -511,6 +562,7 @@ impl App {
         let v = self.asm_view()?;
         let t = &v.display.topo;
         match *r {
+            AsmRef::Contact { .. } => None,
             AsmRef::AsmPlane(id) => Some(Pick::Plane(id)),
             AsmRef::Plane { comp, id } => Some(Pick::Plane(am::comp_datum_id(comp, id))),
             AsmRef::Axis { comp, id } => Some(Pick::Axis(am::comp_datum_id(comp, id))),
@@ -543,6 +595,9 @@ impl App {
 
     pub fn place_ref_picks(&self) -> Vec<Pick> {
         let Some(ed) = self.place_editor() else { return vec![] };
+        if self.placement_guide().is_some_and(|g| !g.attached) {
+            return self.selected_source().and_then(|r| self.asm_ref_pick(&r)).into_iter().collect();
+        }
         ed.comp.constraints.iter().flat_map(|c| [c.a, c.b]).flatten().filter_map(|r| self.asm_ref_pick(&r)).collect()
     }
 
@@ -622,6 +677,7 @@ impl App {
 
     /// Moves the component being placed (screen-plane drag; rotates with `rotate`).
     pub fn place_drag(&mut self, dx: f32, dy: f32, rotate: bool) {
+        if self.placement_guide().is_some_and(|g| !g.free()) { return; }
         let wpp = 2.0 * self.camera.scale / self.viewport_size.1.max(1.0) as f64;
         let (right, up) = (self.camera.right(), self.camera.up());
         let Some(a) = &mut self.asm else { return };
@@ -638,16 +694,28 @@ impl App {
     }
 
     pub fn place_finish(&mut self) {
+        if !self.can_finish_guided() { return; }
         let Some(a) = &mut self.asm else { return };
         let Some(mut ed) = a.place.take() else { return };
+        let advance_queue = ed.is_new && a.data.components.iter().any(|c| !c.suppressed);
         a.preview = None;
         ed.comp.constraints.retain(|c| c.complete());
+        if ed.guide.as_ref().is_some_and(|g| g.free()) {
+            ed.comp.constraints = vec![AsmConstraint::new(AsmCType::Fix)];
+        }
         let invalid = matches!(ed.status, PlaceStatus::Invalid(_));
-        self.tab = Tab::Model;
+        self.tab = if a.assembler.active { Tab::Tools } else { Tab::Model };
         self.dash_panel = None;
+        let staged = a.staged_part.take().and_then(|name| {
+            let i = a.data.parts.iter().position(|p| p.data.name == name)?;
+            Some(a.data.parts.remove(i))
+        });
         let comp = ed.comp.clone();
         let label = format!("{}.PRT {} — {}.", comp.part, if ed.is_new { "zusammengebaut" } else { "Platzierung neu definiert" }, ed.status.text());
         self.asm_commit(&label, |d| {
+            if let Some(part) = staged {
+                d.parts.push(part);
+            }
             match d.components.iter().position(|c| c.id == comp.id) {
                 Some(i) => d.components[i] = comp.clone(),
                 None => d.components.push(comp.clone()),
@@ -658,14 +726,19 @@ impl App {
             self.say("Die Komponente behält ihre letzte gültige Position; Definition editieren, um die Bedingungen zu korrigieren.", MsgKind::Warning);
         }
         self.tree_selection = vec![ed.comp.id];
+        if advance_queue { self.next_assembler_file(); }
     }
 
     pub fn place_cancel(&mut self) {
         if let Some(a) = &mut self.asm {
             a.place = None;
+            a.assembler.pending.clear();
             a.preview = None;
+            if let Some(name) = a.staged_part.take() {
+                a.data.parts.retain(|p| p.data.name != name);
+            }
+            self.tab = if a.assembler.active { Tab::Tools } else { Tab::Model };
         }
-        self.tab = Tab::Model;
         self.dash_panel = None;
         self.say("Komponentenplatzierung abgebrochen.", MsgKind::Info);
     }
@@ -1160,6 +1233,11 @@ impl App {
     }
 
     pub fn asm_tools_ribbon(&mut self, ui: &mut egui::Ui) {
+        if self.asm.as_ref().is_some_and(|a| a.assembler.active) {
+            ui.push_id("assembler_ribbon", |ui| self.assembler_ribbon(ui));
+            return;
+        }
+        self.assembler_group(ui);
         group(ui, "Untersuchen", |ui| {
             if large(ui, Icon::Bom, "Stück-\nliste", true, self.asm.as_ref().map(|a| a.show_bom).unwrap_or(false)).clicked() {
                 if let Some(a) = &mut self.asm {

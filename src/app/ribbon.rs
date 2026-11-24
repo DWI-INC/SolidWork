@@ -454,6 +454,7 @@ impl App {
         if let Some(n) = self.ar_tab_name() {
             return Some(n);
         }
+        if self.placement_guide().is_some() { return Some("Teil einbauen".into()); }
         if self.placing() {
             return Some("Komponentenplatzierung".into());
         }
@@ -591,14 +592,12 @@ impl App {
 
     /// File ▸ New: Creo's New dialog (Part or Assembly).
     pub fn confirm_new(&mut self) {
-        self.show_new_dialog(self.in_asm(), self.drawing_active());
-    }
-
-    fn show_new_dialog(&mut self, asm: bool, drw: bool) {
         if self.busy() {
             self.say("Zuerst das aktive KE abschließen.", MsgKind::Warning);
             return;
         }
+        let asm = self.in_asm();
+        let drw = self.drawing_active();
         self.new_dialog = Some(super::assembly::NewDialog { idea: false,
             assembly: asm && !drw,
             drawing: drw,
@@ -613,16 +612,6 @@ impl App {
             template: true,
             focus: true,
         });
-    }
-
-    pub(super) fn assembler_button(&mut self, ui: &mut egui::Ui) {
-        if large(ui, Icon::Assembly, "Assembler", !self.busy(), false).on_hover_text("Baugruppen-Arbeitsbereich öffnen").clicked() {
-            if self.in_asm() {
-                self.tab = Tab::Model;
-            } else {
-                self.show_new_dialog(true, false);
-            }
-        }
     }
 
     /// File ▸ Close: closes the drawing, returns to the assembly from an opened component,
@@ -987,14 +976,8 @@ impl App {
                     Tab::Pcb => self.pcb_ribbon(ui),
                     Tab::Annot3d => self.annot3d_ribbon(ui),
                     Tab::View => self.view_ribbon(ui),
-                    Tab::Tools => {
-                        group(ui, "Baugruppe", |ui| self.assembler_button(ui));
-                        if asm {
-                            self.asm_tools_ribbon(ui);
-                        } else {
-                            self.tools_ribbon(ui);
-                        }
-                    }
+                    Tab::Tools if asm => self.asm_tools_ribbon(ui),
+                    Tab::Tools => self.tools_ribbon(ui),
                     Tab::Flex => self.flex_ribbon(ui),
                     Tab::Apps => self.apps_ribbon(ui),
                     Tab::Htl => self.htl_ribbon(ui),
@@ -1004,6 +987,8 @@ impl App {
                     Tab::Context => {
                         if self.creo.tools.ar.is_some() {
                             self.ar_ribbon(ui);
+                        } else if self.placement_guide().is_some() {
+                            self.guided_ribbon(ui);
                         } else if self.placing() {
                             self.placement_ribbon(ui);
                         } else if self.editor.is_some() {
@@ -1962,6 +1947,7 @@ impl App {
     }
 
     fn tools_ribbon(&mut self, ui: &mut egui::Ui) {
+        self.assembler_group(ui);
         let free = self.editor.is_none() && self.sketch.is_none();
         let part = !self.in_asm();
         // Creo commands of this tab that SolidWork does not have yet

@@ -243,34 +243,81 @@ pub fn parts_import(b: &Board) -> ImportDef {
     ImportDef { source: "Leiterplatte (Bauteile)".into(), format: "SolidWork-PCB".into(), faces }
 }
 
-/// Outer copper (pads and tracks on top and bottom) as one import feature.
+/// Solid outer foil with plated and non-plated drill openings. Union pads, tracks and
+/// fills before drilling so a trace ending on a mounting pad cannot cap its hole.
 pub fn copper_import(b: &Board) -> ImportDef {
-    let mut m = Mesh { faces: vec![] };
-    let t = b.thickness;
-    let span = |l: u8| if l == F_CU { Some((t, t + COPPER_T)) } else if l == B_CU { Some((-COPPER_T, 0.0)) } else { None };
-    for c in b.copper() {
-        for l in [F_CU, B_CU] {
-            if c.layers & (1 << l) == 0 {
-                continue;
-            }
-            let (y0, y1) = span(l).unwrap();
-            m.prism(&c.hull.polygon(16), y0, y1, false);
+    use super::board::to_c;
+    use super::geom::Hull;
+    use crate::slicer::poly;
+
+    let mut drills: Vec<_> = b.vias.iter().map(|v| to_c(&Hull::disc(v.pos, v.drill / 2.0).polygon(32))).collect();
+    for f in &b.footprints {
+        for pad in f.fp.pads.iter().filter(|p| p.drill > 0.0) {
+            let (a, e) = pad.hole_ends(f.pos, f.rot, f.bottom);
+            drills.push(to_c(&Hull::capsule(a, e, pad.drill / 2.0).polygon(32)));
         }
     }
-    for z in &b.zones {
-        let Some((y0, y1)) = span(z.layer) else { continue };
-        for shape in &z.fill {
-            let outer: Vec<DVec2> = shape[0].iter().map(|q| DVec2::new(q[0], q[1])).collect();
-            let holes: Vec<Vec<DVec2>> = shape[1..].iter().map(|h| h.iter().map(|q| DVec2::new(q[0], q[1])).collect()).collect();
-            let all: Vec<DVec2> = outer.iter().chain(holes.iter().flatten()).copied().collect();
-            let tri = crate::kernel::triangulate::triangulate(&outer, &holes);
-            let up = [0.0, 1.0, 0.0];
-            let pts: Vec<P> = all.iter().map(|q| p(q.x, q.y)).collect();
-            m.face(pts.iter().map(|q| (v3(*q, y1), up)).collect(), facing(&tri, &pts, true));
-            let _ = y0;
+    let drills = poly::from_loops(&drills);
+    let copper = b.copper();
+    let mut m = Mesh { faces: vec![] };
+    for (layer, y0, y1) in [(F_CU, b.thickness, b.thickness + COPPER_T), (B_CU, -COPPER_T, 0.0)] {
+        let outlines: Vec<_> = copper.iter().filter(|c| c.layers & (1 << layer) != 0).map(|c| to_c(&c.hull.polygon(16))).collect();
+        let tracks = poly::from_loops(&outlines);
+        let mut sets = vec![&tracks];
+        sets.extend(b.zones.iter().filter(|z| z.layer == layer).map(|z| &z.fill));
+        for shape in poly::diff(&poly::union_all(&sets), &drills) {
+            let rings: Vec<Vec<P>> = shape.iter().map(|ring| ring.iter().map(|q| p(q[0], q[1])).collect()).collect();
+            let pts: Vec<P> = rings.iter().flatten().copied().collect();
+            let tri = crate::kernel::triangulate::triangulate(&rings[0], &rings[1..]);
+            for (y, up) in [(y1, true), (y0, false)] {
+                let n = [0.0, if up { 1.0 } else { -1.0 }, 0.0];
+                m.face(pts.iter().map(|q| (v3(*q, y), n)).collect(), facing(&tri, &pts, up));
+            }
+            for ring in rings {
+                for i in 0..ring.len() {
+                    let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
+                    let d = (b - a).normalize_or_zero();
+                    let n = [d.y as f32, 0.0, -d.x as f32];
+                    m.face(vec![(v3(a, y0), n), (v3(a, y1), n), (v3(b, y1), n), (v3(b, y0), n)], vec![[0, 1, 2], [0, 2, 3]]);
+                }
+            }
         }
     }
     ImportDef { source: "Leiterplatte (Kupfer)".into(), format: "SolidWork-PCB".into(), faces: m.faces }
+}
+
+/// Separate bodies retain the bearing faces and drill axes of the laminate when the
+/// populated PCB is placed as one rigid assembly component.
+fn add_import_body(m: &mut ModelData, name: &str, color: [f32; 3], def: ImportDef) {
+    if def.faces.is_empty() {
+        return;
+    }
+    let id = m.next_id;
+    m.features.push(Feature { id, name: name.into(), suppressed: false, hidden: false, kind: FeatureKind::new_body(BodyOp::New) });
+    m.features.push(Feature { id: id + 1, name: format!("{name} (Geometrie)"), suppressed: false, hidden: false, kind: FeatureKind::Import(def) });
+    m.feature_body.insert(id + 1, id);
+    m.feature_colors.insert(id + 1, color);
+    m.next_id += 2;
+}
+
+pub fn populated_part(b: &Board, name: &str) -> Result<ModelData, String> {
+    let mut m = board_part(b, name)?;
+    add_import_body(&mut m, "Kupfer", [0.85, 0.66, 0.30], copper_import(b));
+    for (mat, faces) in component_meshes(b) {
+        add_import_body(&mut m, &mat.name(), mat.rgb(), ImportDef { source: "Bestückung".into(), format: "SolidWork-PCB".into(), faces });
+    }
+    Ok(m)
+}
+
+pub fn module_part(module: super::modules::Module) -> Result<(ModelData, Board), String> {
+    let b = module.board();
+    let mut m = board_part(&b, module.name())?;
+    let hardware = module.hardware(0.0);
+    for (mat, v, t) in hardware.parts {
+        let face = place_local(&b.footprints[0], b.thickness, &v, &t);
+        add_import_body(&mut m, &mat.name(), mat.rgb(), ImportDef { source: module.name().into(), format: "SolidWork-PCB".into(), faces: vec![face] });
+    }
+    Ok((m, b))
 }
 
 fn import_part(name: &str, def: ImportDef, color: [f32; 3]) -> ModelData {
@@ -303,6 +350,9 @@ pub fn assembly(b: &Board, name: &str) -> Result<AssemblyData, String> {
         c.constraints.push(AsmConstraint::new(AsmCType::Default));
         asm.components.push(c);
         id += 1;
+    }
+    if let Some(laminate) = asm.parts.first_mut() {
+        laminate.board = Some(std::sync::Arc::new(b.clone()));
     }
     asm.next_id = id;
     Ok(asm)

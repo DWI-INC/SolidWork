@@ -441,6 +441,11 @@ impl Board {
 
     /// Groups of same-net copper that touch (pads, tracks, vias and filled zones).
     pub fn clusters(&self, cu: &[Copper]) -> Vec<usize> {
+        self.copper_clusters(cu, true)
+    }
+
+    /// The probe follows physical copper, including unassigned pads and shorts across nets.
+    pub(super) fn copper_clusters(&self, cu: &[Copper], same_net: bool) -> Vec<usize> {
         let n = cu.len();
         let mut parent: Vec<usize> = (0..n).collect();
         fn find(p: &mut [usize], i: usize) -> usize {
@@ -464,7 +469,7 @@ impl Board {
                 if boxes[j].0.x > boxes[i].1.x + 1e-6 {
                     break;
                 }
-                if cu[i].net != cu[j].net || cu[i].net.is_empty() || cu[i].layers & cu[j].layers == 0 {
+                if (same_net && (cu[i].net != cu[j].net || cu[i].net.is_empty())) || cu[i].layers & cu[j].layers == 0 {
                     continue;
                 }
                 if boxes[j].0.y > boxes[i].1.y + 1e-6 || boxes[i].0.y > boxes[j].1.y + 1e-6 {
@@ -482,7 +487,7 @@ impl Board {
                 continue;
             }
             for island in &z.fill {
-                let hits: Vec<usize> = (0..n).filter(|&i| cu[i].net == z.net && cu[i].layers & (1 << z.layer) != 0 && touches_island(&cu[i].hull, island)).collect();
+                let hits: Vec<usize> = (0..n).filter(|&i| (!same_net || cu[i].net == z.net) && cu[i].layers & (1 << z.layer) != 0 && touches_island(&cu[i].hull, island)).collect();
                 for w in hits.windows(2) {
                     let (a, b) = (find(&mut parent, w[0]), find(&mut parent, w[1]));
                     parent[a.max(b)] = a.min(b);

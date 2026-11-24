@@ -260,7 +260,7 @@ impl App {
                     if r.clicked() {
                         self.regenerate(true);
                     }
-                    if let Some(ed) = self.place_editor() {
+                    if let Some(ed) = self.place_editor().filter(|e| e.guide.is_none()) {
                         let st = ed.status.clone();
                         ui.label(RichText::new(format!("Status: {}", st.text())).size(12.0).color(match st {
                             crate::model::assembly::PlaceStatus::Full | crate::model::assembly::PlaceStatus::Assumed => Color32::from_rgb(20, 130, 50),
@@ -499,7 +499,10 @@ impl eframe::App for App {
         }
         self.shortcuts(ctx);
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!("{} (Aktiv) - SolidWork", self.data.name)));
-        if let Some(p) = ctx.input(|i| i.raw.dropped_files.first().and_then(|f| f.path.clone())) {
+        let dropped: Vec<_> = ctx.input(|i| i.raw.dropped_files.iter().filter_map(|f| f.path.clone()).collect());
+        if !dropped.is_empty() && self.assembler_workspace() {
+            self.queue_assembler_files(dropped);
+        } else if let Some(p) = dropped.into_iter().next() {
             // a part dropped on an assembly is assembled, like dragging from Creo's browser
             if self.in_asm() && p.extension().map(|e| e == "pfprt").unwrap_or(false) {
                 if !self.placing() {
@@ -518,14 +521,14 @@ impl eframe::App for App {
         self.tab_strip(ctx);
         let mut outcome = Outcome::None;
         // a minimised ribbon still shows feature dashboards (they are the only way to finish them)
-        let show_ribbon = !self.creo.ribbon_min_hidden() || self.tab == Tab::Context;
+        let show_ribbon = !self.creo.ribbon_min_hidden() || self.tab == Tab::Context || self.assembler_workspace();
         if show_ribbon {
             egui::TopBottomPanel::top("ribbon").frame(egui::Frame::NONE.fill(RIB_TOP).inner_margin(egui::Margin::symmetric(4, 3))).show(ctx, |ui| {
                 outcome = self.ribbon_body(ui);
                 if self.tab == Tab::Context && self.sketch.is_none() && self.editor.is_some() {
                     self.feature_panel_tabs(ui);
                 }
-                if self.tab == Tab::Context && self.placing() {
+                if self.tab == Tab::Context && self.placing() && self.placement_guide().is_none() {
                     self.placement_panel_tabs(ui);
                 }
                 let r = ui.max_rect();
@@ -540,7 +543,9 @@ impl eframe::App for App {
                 .width_range(220.0..=620.0)
                 .frame(egui::Frame::NONE.fill(PANEL_BG).inner_margin(egui::Margin { left: 4, right: 4, top: 0, bottom: 4 }))
                 .show(ctx, |ui| {
-                    if self.tab == Tab::Print {
+                    if self.assembler_workspace() {
+                        self.assembler_panel(ui)
+                    } else if self.tab == Tab::Print {
                         self.print_panel(ui)
                     } else if self.tab == Tab::Pcb {
                         self.pcb_panel(ui)
@@ -584,6 +589,7 @@ impl eframe::App for App {
         self.sketch_resetup_dialog(ctx);
         self.dialogs(ctx);
         self.asm_windows(ctx);
+        self.assembler_windows(ctx);
         self.new_dialogs(ctx);
         self.tool_windows(ctx);
         self.sim_windows(ctx);

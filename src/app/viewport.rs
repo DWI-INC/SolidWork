@@ -170,6 +170,13 @@ impl App {
                 }
             }
         }
+        let simple = self.assembler_workspace();
+        let markers = self.hole_markers();
+        let target_hole = hover_pos.and_then(|p| {
+            let here = p - rect.min.to_vec2();
+            markers.iter().map(|(i, center)| (*i, center.distance(here))).filter(|(_, d)| *d <= 12.0)
+                .min_by(|a, b| a.1.total_cmp(&b.1)).map(|(i, _)| i)
+        });
         let delta = pointer.delta();
         let orbit_btn = pointer.middle_down() || pointer.secondary_down() || (pointer.primary_down() && mods.alt);
         if resp.dragged() && orbit_btn && (delta.x != 0.0 || delta.y != 0.0) {
@@ -221,7 +228,10 @@ impl App {
                 Some(p) if hover_pos.is_some() => self.owner(p),
                 _ => None,
             };
-            if resp.clicked() && !mods.alt && ui.ctx().data(|d| d.get_temp::<egui::Rect>(egui::Id::new("dir_arrow"))).is_some_and(|r| hover_pos.is_some_and(|p| r.contains(p))) {
+            if resp.clicked() && !mods.alt && self.placement_guide().is_some() {
+                if let Some(hp) = hover_pos { self.guided_click(local(hp), target_hole); }
+                self.mini = None;
+            } else if resp.clicked() && !mods.alt && ui.ctx().data(|d| d.get_temp::<egui::Rect>(egui::Id::new("dir_arrow"))).is_some_and(|r| hover_pos.is_some_and(|p| r.contains(p))) {
                 self.flip_extrude_direction();
             } else if resp.clicked() && !mods.alt {
                 let p0 = hover_pos.and_then(|hp| self.pick_at(local(hp)));
@@ -247,7 +257,7 @@ impl App {
                 if let Some(o) = hover_pos.and_then(|hp| self.pick_at(local(hp))).and_then(|p| self.owner(p)) {
                     if self.in_asm() {
                         if self.component(o).is_some() {
-                            self.edit_placement(o);
+                            if simple { self.reposition_in_assembler(o); } else { self.edit_placement(o); }
                         }
                     } else if self.data.feature(o).is_some() {
                         self.start_edit_dims(o);
@@ -284,7 +294,7 @@ impl App {
             _ => {}
         }
         let back = self.camera.back();
-        if self.show_planes || self.editor.as_ref().map(|e| e.pick.is_some()).unwrap_or(false) {
+        if !simple && self.show_planes || self.editor.as_ref().map(|e| e.pick.is_some()).unwrap_or(false) {
             for p in &r.planes {
                 if self.data.feature(p.id).map(|f| f.hidden).unwrap_or(false) {
                     continue;
@@ -318,7 +328,7 @@ impl App {
                 }
             }
         }
-        if self.show_axes {
+        if self.show_axes && !simple {
             for a in &r.axes {
                 let (p0, p1) = axis_segment(a, &r);
                 let c = if axes.contains(&a.id) {
@@ -332,14 +342,14 @@ impl App {
             }
         }
         let s = (if b.is_empty() { 100.0 } else { b.diagonal() }) * 0.015;
-        if self.show_points {
+        if self.show_points && !simple {
             for p in &r.points {
                 for d in [V3::X, V3::Y, V3::Z] {
                     push_line(&mut lines, p.p - d * s, p.p + d * s, AXIS);
                 }
             }
         }
-        let csys_on = self.show_csys && !self.data.feature(CSYS_ID).map(|f| f.hidden || f.suppressed).unwrap_or(true);
+        let csys_on = !simple && self.show_csys && !self.data.feature(CSYS_ID).map(|f| f.hidden || f.suppressed).unwrap_or(true);
         if csys_on {
             let l = s * 4.0;
             for d in [V3::X, V3::Y, V3::Z] {
@@ -349,7 +359,7 @@ impl App {
                 push_line(&mut lines, d * l, d * (l * 0.86) - o * (l * 0.05), AXIS);
             }
         }
-        if self.show_csys {
+        if self.show_csys && !simple {
             for c in &r.csys {
                 if self.data.feature(c.id).map(|f| f.hidden).unwrap_or(false) {
                     continue;
@@ -383,7 +393,7 @@ impl App {
                 push_line(&mut lines, r1[k], r1[k + 1], col);
             }
         }
-        if self.show_curves {
+        if self.show_curves && !simple {
             for c in &r.curves {
                 if self.data.feature(c.feature).map(|f| f.hidden).unwrap_or(false) {
                     continue;
@@ -427,7 +437,7 @@ impl App {
         // Live-Simulation: the result picture replaces the model
         let sim = self.sim_frame(&mut lines);
         let a = &self.data.appearance;
-        let tint = if self.asm_view().is_some() { [1.0, 1.0, 1.0] } else { a.color };
+        let tint = if self.asm_view().is_some() || !self.data.feature_colors.is_empty() { [1.0, 1.0, 1.0] } else { a.color };
         let section = self.section_plane().map(|(n, w)| [n.x as f32, n.y as f32, n.z as f32, w as f32]);
         let frame = FrameData {
             mvp: self.camera.proj(size.0 / size.1) * self.camera.view(),
@@ -465,6 +475,16 @@ impl App {
             painter.add(egui::PaintCallback { rect, callback: Arc::new(cb) });
         }
 
+        // Screen-size targets keep even small mounting holes easy to hit.
+        for (i, marker) in markers {
+            let pos = marker + rect.min.to_vec2();
+            let hot = target_hole == Some(i);
+            let radius = if hot { 10.0 } else { 8.0 };
+            painter.circle_stroke(pos, radius + 1.0, Stroke::new(3.0_f32, Color32::from_rgb(18, 64, 75)));
+            painter.circle_stroke(pos, radius, Stroke::new(2.0_f32, if hot { Color32::WHITE } else { Color32::from_rgb(97, 240, 220) }));
+            painter.circle_filled(pos, 1.75, Color32::WHITE);
+        }
+        if target_hole.is_some() { ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand); }
         // ---- overlays ----
         let to_screen = |p: V3| self.camera.project(p, size).map(|s| Pos2::new(rect.min.x + s.0, rect.min.y + s.1));
         let chain_line = |ci: usize, col: Color32, w: f32| {
@@ -492,7 +512,7 @@ impl App {
         self.draw_direction_arrow(&painter, &to_screen);
         self.draw_loop_offer(&painter, &to_screen);
         self.draw_annots(&painter, &to_screen);
-        if self.show_tags {
+        if self.show_tags && !simple {
             if self.show_planes {
                 for p in &r.planes {
                     if self.data.feature(p.id).map(|f| f.hidden).unwrap_or(false) {
@@ -586,7 +606,7 @@ impl App {
         let p: Option<Pick> = ui.ctx().data(|d| d.get_temp(egui::Id::new("ctx_pick"))).flatten();
         if self.in_asm() {
             if self.placing() {
-                if menu_entry(ui, Icon::Ok, "OK", true, false).clicked() {
+                if menu_entry(ui, Icon::Ok, if self.placement_guide().is_some() { "Einbauen" } else { "OK" }, self.can_finish_guided(), false).clicked() {
                     self.place_finish();
                     ui.close_menu();
                 }

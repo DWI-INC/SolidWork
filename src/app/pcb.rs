@@ -148,6 +148,7 @@ pub struct PcbUi {
     pub erc: Option<Vec<ErcItem>>,
     pub drc: Option<Vec<drc::Violation>>,
     pub report: bool,
+    pub bench: Option<super::assembler::BenchWindow>,
     pub lib_filter: String,
     pub lib_sel: Option<String>,
     pub place_rot: f64,
@@ -202,6 +203,7 @@ impl Default for PcbUi {
             erc: None,
             drc: None,
             report: false,
+            bench: None,
             lib_filter: String::new(),
             lib_sel: None,
             place_rot: 0.0,
@@ -312,6 +314,7 @@ impl PcbUi {
     /// Copper and drawings changed: ratsnest and zone meshes are recomputed; ERC/DRC markers
     /// of the old state are dropped (the report window offers to check again).
     pub fn changed(&mut self) {
+        self.bench = None;
         self.rats = None;
         self.zone_mesh = None;
         if self.erc.is_some() || self.drc.is_some() {
@@ -1026,6 +1029,10 @@ impl App {
 
     /// The board as a SolidWork assembly (laminate, copper, components).
     pub fn pcb_make_3d(&mut self) {
+        if self.in_asm() {
+            self.assembler_place_pcb();
+            return;
+        }
         let name = self.pcb_base_name();
         match body3d::assembly(&self.pcb.project.board, &name) {
             Ok(asm) => {
@@ -1141,6 +1148,11 @@ impl App {
         } else {
             self.pcb_brd_ribbon(ui);
         }
+        group(ui, "Prüfen", |ui| {
+            if large(ui, Icon::PcbBoard, "GPIO-\nPrüfstand", !self.pcb.project.board.footprints.is_empty(), self.pcb.bench.is_some()).clicked() {
+                self.pcb.bench = Some(super::assembler::BenchWindow::new(&self.pcb.project.name, self.pcb.brd()));
+            }
+        });
         group(ui, "Bibliothek", |ui| {
             if sch {
                 if large(ui, Icon::PcbSymbol, "Symbol-\nEditor", true, self.pcb.sym_ed.is_some()).on_hover_text("Eigenes Symbol aus einer Pintabelle erstellen oder das gewählte bearbeiten").clicked() {
@@ -1159,7 +1171,7 @@ impl App {
             if large(ui, Icon::PcbGerber, "Gerber +\nBohrdaten", !self.pcb.project.board.outline.is_empty(), false).on_hover_text("Fertigungsdaten: Gerber RS-274X aller Lagen und Excellon-Bohrdateien").clicked() {
                 self.pcb_export_fab();
             }
-            if large(ui, Icon::Pcb3d, "3D-\nModell", !self.pcb.project.board.outline.is_empty(), false).on_hover_text("Leiterplatte mit Bauteilen als SolidWork-Baugruppe – für Gehäuse und Baugruppen").clicked() {
+            if large(ui, Icon::Pcb3d, if self.in_asm() { "In Baugruppe\neinbauen" } else { "3D-\nModell" }, !self.pcb.project.board.outline.is_empty(), false).on_hover_text("Leiterplatte mit Bauteilen als SolidWork-Baugruppe – für Gehäuse und Baugruppen").clicked() {
                 self.pcb_make_3d();
             }
             stack(ui, |ui| {

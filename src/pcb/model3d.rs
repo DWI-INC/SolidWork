@@ -331,8 +331,55 @@ fn tht_lead(m: &mut Model, at: P, top: f64, thick: f64, d: f64, mat: Mat) {
     m.cyl(mat, [at.x, at.y, -thick - 1.5], [at.x, at.y, top], d / 2.0, 10);
 }
 
+/// The module PCB, including open screw holes, and its mating header on the carrier.
+fn mounted_module(module: super::modules::Module, thickness: f64) -> Model {
+    use super::modules::Module;
+    let surface = match module {
+        Module::Pi4 => -thickness - 11.0,
+        Module::Esp32 => 5.0,
+    };
+    let base = surface - 1.6;
+    let mut m = module.hardware(surface);
+    let outline = module.outline();
+    let holes: Vec<Vec<P>> = module
+        .mounts()
+        .iter()
+        .map(|&(x, y)| {
+            (0..32)
+                .map(|i| {
+                    let a = -std::f64::consts::TAU * i as f64 / 32.0;
+                    p(x, y) + 1.35 * p(a.cos(), a.sin())
+                })
+                .collect()
+        })
+        .collect();
+    let pts: Vec<_> = outline.iter().chain(holes.iter().flatten()).copied().collect();
+    for [a, b, c] in crate::kernel::triangulate::triangulate(&outline, &holes) {
+        for (z, t) in [(surface, [a, b, c]), (base, [c, b, a])] {
+            m.poly(Mat::Green, &t.map(|i| [pts[i].x, pts[i].y, z]));
+        }
+    }
+    for ring in std::iter::once(&outline).chain(&holes) {
+        for i in 0..ring.len() {
+            let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
+            m.quad(Mat::Green, [a.x, a.y, base], [b.x, b.y, base], [b.x, b.y, surface], [a.x, a.y, surface]);
+        }
+    }
+    if module == Module::Pi4 {
+        m.boxx(Mat::Plastic, [7.1, 0.96, surface + 2.5], [57.9, 6.04, -thickness]);
+        for pin in module.pins() {
+            let q = pin.pos;
+            m.boxx(Mat::Gold, [q.x - 0.32, q.y - 0.32, -thickness], [q.x + 0.32, q.y + 0.32, 1.5]);
+        }
+    }
+    m
+}
+
 /// Model of a footprint (None: keep the simple box bodies).
 pub fn generate(fp: &Footprint, value: &str, thick: f64) -> Option<Model> {
+    if let Some(module) = super::modules::Module::of(fp) {
+        return Some(mounted_module(module, thick));
+    }
     let id = fp.short().to_string();
     let mut m = Model::default();
     let pads = pads_by(fp);
@@ -708,12 +755,15 @@ mod tests {
         for f in super::super::footprints::library() {
             let m = generate(f, "10k", 1.6).unwrap_or_else(|| panic!("kein Modell für {}", f.id));
             assert!(m.triangles() > 10, "{}", f.id);
-            // nothing floats far above or sinks into the part side of the board (only leads go down)
+            // On a HAT the Pi is below the carrier. Its bottom is 1.6 + 11 + 1.6 mm below F.Cu.
+            let min_z = if super::super::modules::Module::of(f) == Some(super::super::modules::Module::Pi4) { -14.21 } else { -10.0 };
             for (_, v, _) in &m.parts {
                 for q in v {
-                    assert!(q[2] > -10.0 && q[2] < 30.0, "{}", f.id);
+                    assert!(q[2] > min_z && q[2] < 30.0, "{}", f.id);
                 }
             }
         }
     }
+
+
 }

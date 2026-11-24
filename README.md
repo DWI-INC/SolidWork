@@ -8,11 +8,11 @@ The app is written in Rust and includes its own geometry kernel, constraint solv
 
 ![SolidWork workspace showing the feature tree and a bracket with a central boss and four mounting holes](docs/screens/bracket.png)
 
-## New in 1.3.1
+## SolidWork 1.0.0
 
-Open **Assembler** directly from **Startseite** (beside **Neu**) or **Werkzeuge**. The **Neu** dialog opens with **Baugruppe** selected. Name the assembly, click **OK**, then choose **Modell → Zusammenbauen** to place a part. In an existing assembly, **Werkzeuge → Assembler** returns to its modelling tools.
+Open **Werkzeuge → Assembler** to assemble parts, screws and populated circuit boards. Pick two flat faces to align them, then adjust rotation and confirm placement. The hardware library includes the ESP32 and Raspberry Pi 4 Model B (4 GB). The PCB bench checks power and GPIO connections.
 
-## New in 1.3.0
+## PCB editor, Idea pages and connectors
 
 **Circuit boards and enclosures.** Open *Werkzeuge ▸ Manufacture ▸ Leiterplatte* to draw a schematic, transfer its connections to a board and route the copper. You can use a closed part sketch as the board outline. Choose *3D-Modell* to bring the board, copper and components into a mechanical assembly and check where connectors meet the enclosure.
 
@@ -242,7 +242,7 @@ Small things that got in the way, found by using SolidWork like a student would:
 
 ## Features
 
-For the PCB editor, Idea pages and connector profiles, see [New in 1.3.0](#new-in-130).
+For the PCB editor, Idea pages and connector profiles, see [PCB editor, Idea pages and connectors](#pcb-editor-idea-pages-and-connectors).
 
 **Modelling (Modell tab)**
 - Default datums RECHTS / OBEN / VORNE (RIGHT / TOP / FRONT) and the BASIS coordinate system
