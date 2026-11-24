@@ -1,58 +1,39 @@
-# SolidWork — Creo-style parametric CAD for macOS, Linux and Windows (Rust)
+# <img src="assets/solidwork-icon.png" width="64" height="64" align="absmiddle" alt=""> SolidWork
 
-SolidWork is a native, history-based parametric 3D modeller for macOS, Linux and Windows that follows the PTC Creo
-Parametric 10 workflow and look, with Creo's German user interface: ribbon → feature tab →
-sketcher → regenerate. It has a model tree, datum features, parameters and relations,
-assemblies built from placement constraints, associative 2D drawings, 3D annotations, a
-Live-Simulation tab, 3D printing and CNC milling, a KiCad-compatible printed circuit board
-designer and an MCP server for AI assistants.
+SolidWork is a parametric CAD modeller for macOS, Windows and Linux. Build a part from dimensioned sketches, fit it into an assembly, and generate drawings that update when the model changes. The German-language interface follows the PTC Creo Parametric 10 workflow.
 
-It is written entirely in Rust: its own geometry kernel, constraint solvers, hidden-line
-removal, simulation solvers, STEP reader and OpenGL viewport on egui/eframe.
+The app is written in Rust and includes its own geometry kernel, constraint solvers and STEP reader. The desktop app also includes structural, thermal and flow simulation, a printed circuit board editor, an FDM slicer, CNC milling and an MCP server for editing parts from an AI assistant.
 
-![SolidWork workspace](docs/screens/bracket.png)
+[Download](#download) · [Build from source](#build--run) · [Feature reference](#features) · [Screenshot gallery](#screenshot-gallery) · [MCP setup](#ai-assistants-mcp)
 
-| Sketching in 3D (weak + strong dimensions) | Skizzierer-Palette | Extrude tab with Options panel |
-|---|---|---|
-| ![](docs/screens/sketch.png) | ![](docs/screens/palette.png) | ![](docs/screens/extrude.png) |
-| **Edit Dimensions on the model** | **File menu** | **Datum Plane dialog** |
-| ![](docs/screens/editdims.png) | ![](docs/screens/file.png) | ![](docs/screens/dialog.png) |
-| **Selection mini toolbar** | **Round sets, variable radius** | **Standard (ISO/UNC) tapped hole** |
-| ![](docs/screens/mini.png) | ![](docs/screens/roundsets.png) | ![](docs/screens/stdhole.png) |
-| **Fill pattern in a sketched region** | **Extrude up to the next surface** | **3D annotations** |
-| ![](docs/screens/fillpattern.png) | ![](docs/screens/tonext.png) | ![](docs/screens/annot3d.png) |
-| **Analysis colours on the model** | **Whole-loop question for chamfers** | **Relations and local parameters** |
-| ![](docs/screens/analysis.png) | ![](docs/screens/loop_offer.png) | ![](docs/screens/parameters.png) |
+![SolidWork workspace showing the feature tree and a bracket with a central boss and four mounting holes](docs/screens/bracket.png)
 
-### Live-Simulation
+## New in 1.3.0
 
-| Structural (von Mises stress) | Flow around the part | Thermal |
-|---|---|---|
-| ![](docs/screens/sim_structural.png) | ![](docs/screens/sim_fluid.png) | ![](docs/screens/sim_thermal.png) |
+**Circuit boards and enclosures.** Open *Werkzeuge ▸ Manufacture ▸ Leiterplatte* to draw a schematic, transfer its connections to a board and route the copper. You can use a closed part sketch as the board outline. Choose *3D-Modell* to bring the board, copper and components into a mechanical assembly and check where connectors meet the enclosure.
 
-### Leiterplatte (printed circuit boards)
+| Routed LED blinker board | Component models in a SolidWork assembly |
+| --- | --- |
+| ![LED blinker board with routed copper, pads, vias and a ground pour](docs/screens/pcb_routed.png) | ![Populated sample PCB in the assembly workspace with component geometry and connectors](docs/screens/pcb_showcase_3d_close.png) |
 
-| Schematic with symbol library | Routed board with GND pour | Board as a 3D assembly |
-|---|---|---|
-| ![](docs/screens/pcb_sch.png) | ![](docs/screens/pcb_routed.png) | ![](docs/screens/pcb_showcase_3d_close.png) |
-| **Hierarchical sheet, multi-unit op-amp, bus** | **Footprint editor (QFN generator)** | **Design rules check** |
-| ![](docs/screens/pcb_sch_hier_insheet.png) | ![](docs/screens/pcb_brd_fped.png) | ![](docs/screens/pcb_drc.png) |
+**Idea pages and connector cutouts.** Choose *Datei ▸ Neu ▸ Idee* to sketch a concept, set the pen colour and width, or place a PNG or JPEG reference on the page. SolidWork saves the strokes and images together in a `.prti` file as you work. When you model an enclosure, the sketcher's *Ports* palette provides profiles for USB-C, USB-A, HDMI, Ethernet and other connector openings.
 
-### Assemblies
+| Idea page with a flange study | Connector profiles in the sketcher |
+| --- | --- |
+| ![Idea page combining a flange reference image with a six-hole bolt-circle sketch](docs/screens/idea_flange.png) | ![Ports palette open in the sketcher with the USB-A opening selected](docs/screens/ports.png) |
 
-![Assembly](docs/screens/assembly.png)
+**Calculations in dimension fields.** Enter `(10+2)/3` in an extrusion depth and press Enter to set it to `4`. Enter `HEIGHT-7` to keep a formula that follows the model parameter. Face triangulation also handles parts with many holes more reliably and removes stray edges between openings.
 
-| Component Placement tab | Exploded view | Bill of Materials + mass properties | Component opened in context |
-|---|---|---|---|
-| ![](docs/screens/placement.png) | ![](docs/screens/explode.png) | ![](docs/screens/bom.png) | ![](docs/screens/openpart.png) |
+<details>
+<summary>PCB design, checks and export formats</summary>
 
-### Drawings
+- Design schematics with hierarchical sheets, buses and multi-unit parts. Run the electrical rules check before transferring the netlist to the board.
+- Place footprints on either side, route manually with 45° bends or use the two- or four-layer autorouter. The layout editor also supports differential pairs, length tuning and copper zones with thermal reliefs.
+- Check clearance, track width, drill spacing, unrouted nets and agreement with the schematic. Inspect the reported violations in the board editor.
+- Read and write KiCad projects, schematics and boards. Load `.kicad_sym` libraries and `.pretty` footprints, edit symbols and generate footprints from package dimensions. The 3D view uses KiCad STEP component models when available and can generate package geometry.
+- Export Gerber layers, Excellon drill and slot files, pick-and-place coordinates, IPC-2581 and a CSV bill of materials.
 
-![Part drawing](docs/screens/drawing.png)
-
-| Assembly drawing: BOM table + balloons | Created dimensions | Geometric tolerances | Dimension tab: ISO fit H7 |
-|---|---|---|---|
-| ![](docs/screens/drawing_asm.png) | ![](docs/screens/drawing_annotate.png) | ![](docs/screens/drawing_gdt.png) | ![](docs/screens/drawing_tolerance.png) |
+</details>
 
 ## Interface
 
@@ -68,7 +49,7 @@ the German label where it helps to find the command.
 - **Navigator** with the model tree (default datums, expandable sections, failed/suppressed markers, draggable insert marker, columns, filter) and a folder browser
 - **Graphics window**: Creo's graphics toolbar (customisable by right-click), two-sided datum planes with tags, dash-dot axes, spin centre, green selection / blue preselection, the three-row **mini toolbar** next to a selection, and **double-click Edit Dimensions** with in-place value editing
 - **Status bar**: message area, regeneration status, placement status, selection count and selection filter
-- Creo's **Neu** dialog (part / assembly / drawing with sub-types), **Datei öffnen** dialog with preview and file operations, and the **Create Component** dialog
+- The **Neu** dialog for parts, assemblies, drawings and Idea pages, **Datei öffnen** dialog with preview and file operations, and the **Create Component** dialog
 - Drop-down menus are as wide as their text and slightly rounded
 - Flexible Modellierung and some commands on Anwendungen and HTL are shown for layout parity but greyed out (see [Scope](#scope-compared-with-creo))
 
@@ -121,6 +102,9 @@ codesign --force --deep -s - /Applications/SolidWork.app
 On Linux, `scripts/package-linux.sh` packs the release build into a `.deb`, an `.rpm`, an
 AppImage and a `.tar.gz` in `dist/`. The release workflow in `.github/workflows/release.yml`
 builds the files for x86-64 and ARM64 on all three systems, plus 32-bit x86 on Windows.
+
+On first launch, SolidWork imports settings and recent files from Freo if available. It reuses
+an existing `freo-work` folder when there is no `solidwork-work` folder yet.
 
 Open a model directly with `solidwork part.pfprt` / `solidwork asm0001.pfasm`, from Finder, or by
 dragging a file onto the window (a part dropped onto an open assembly is assembled).
@@ -216,19 +200,6 @@ Copy the `solidwork-cad` folder into an agent's `<workspace>/skills/` (or `~/.op
 for all agents). It only shows up once `mcp.servers.solidwork` is configured. Check it with
 `openclaw skills info solidwork-cad --agent <id>`.
 
-## New in 1.3.0
-
-- **Leiterplatte (Werkzeuge ▸ Manufacture ▸ Leiterplatte)**: printed circuit boards the KiCad way, with Creo's ribbon, dialogs and German interface
-  - **Schematic**: symbol library (passives, diodes, LEDs, transistors, ICs, connectors, switches, power symbols), wires, net labels, global and hierarchical labels, no-connect flags, buses with bus entries, hierarchical sheets with sheet pins, parts with several units (U1A, U1B …), annotation and an electrical rules check
-  - **Board**: outline as a rectangle or from a closed sketch of the open part, update from the schematic, placement on both sides, ratsnest, manual routing with 45° bends, vias and three modes for obstacles (show, walk around, shove), differential pairs, length tuning with meanders, copper zones with thermal reliefs, an autorouter for 2 and 4 layers, net classes, and a design rules check (clearances, shorts, widths, drills, annular rings, hole spacing, board edge, courtyards, unrouted nets, pair skew, schematic parity)
-  - **Libraries and editors**: about 60 footprints with KiCad names (the USB, RJ45, DC and audio jacks match the sketch palette's "Ports" openings for the enclosure), KiCad symbol (`.kicad_sym`) and footprint (`.pretty`) libraries can be loaded, a symbol editor (pin table → IC box) and a footprint editor (chip, SOIC, QFP/QFN and through-hole generators or a pad table), export of the project libraries
-  - **Outputs**: Gerber RS-274X with X2 attributes for all layers and a stroke-font silkscreen, Excellon drill files with routed slots, Gerber job file, pick-and-place files, IPC-2581, BOM (CSV)
-  - **KiCad files**: `.kicad_sch` (with sub-sheets), `.kicad_pcb` and `.kicad_pro` are read and written; KiCad's own demo projects load with every pad on the same net as in KiCad
-  - **3D**: the board becomes a SolidWork assembly (laminate with all drills, copper, components) ready for enclosure design. Components get detailed generated models (gull-wing leads, terminations, leads through the board, resistor colour bands from the value, LED domes, electrolytic cans, pin headers, connector shells) in their real colours, or the KiCad STEP model when it is installed
-- **Idee**: freehand idea pages (`.prti`) with pencil strokes and placed PNG/JPEG images, from Datei ▸ Neu ▸ Idee
-- **Calculations in value boxes**: dashboards accept arithmetic such as `10-7` or `(10+2)/3` and calculate it on Enter, while relations like `HEIGHT-7` stay formulas
-- **Kernel**: faces with many holes no longer show stray edges between the holes, and the face triangulation is more robust (cleans up, cures self-touching bridges and splits along a diagonal instead of guessing)
-
 ## New in 1.2.0
 
 - **2D drawing to 3D part**: open a **DXF** (or **DWG** with LibreDWG or the ODA File Converter installed) and SolidWork builds the part from its views. Front, top and side views are found by their alignment (the isometric view, frame, title block, dimensions and centre lines are skipped), European or American projection from where the top view lies, the scale from the dimensions or the title block. The part is made of editable features: the top view's outline extruded, everything outside the front and side outlines cut away, holes and pockets cut over the depth their hidden lines show, round bosses shaped. Circles and arcs stay true circles and arcs with exact sizes; a single view becomes a plate (thickness from a "t=5" note). A dialog shows what was found and rebuilds with another projection, scale or thickness
@@ -266,6 +237,8 @@ Small things that got in the way, found by using SolidWork like a student would:
 - **Speed**: chamfers and rounds only cut the model near the tool, and only the changed feature is regenerated; adding or editing a feature takes a fraction of the time it did
 
 ## Features
+
+For the PCB editor, Idea pages and connector profiles, see [New in 1.3.0](#new-in-130).
 
 **Modelling (Modell tab)**
 - Default datums RECHTS / OBEN / VORNE (RIGHT / TOP / FRONT) and the BASIS coordinate system
@@ -342,11 +315,73 @@ Small things that got in the way, found by using SolidWork like a student would:
 - Drag views, dimensions, notes, balloons and the table; double-click to edit; undo/redo
 - **Publish** tab: vector **PDF** (all sheets), **DXF** (R12, layers per line type) and **SVG**
 
+**Manufacturing (Werkzeuge ▸ Manufacture)**
+
+- In *Slicer*, select the printer, filament and print profile. Step through the sliced layers to inspect walls, infill and supports before exporting G-code.
+- In *CNC*, set the machine, stock and work origin. Play back the toolpaths to see the remaining stock and inspect any reported collisions before exporting NC code.
+
+| FDM layer preview | CNC stock simulation |
+| --- | --- |
+| ![Bracket on the print bed with walls and infill coloured by line type](docs/screens/print_layers.png) | ![Simulated end mill removing stock around the bracket boss](docs/screens/cnc_stock.png) |
+
 **Files**
+
+- Idea pages (`.prti`) store pen strokes and embedded reference images together.
 - Native `.pfprt` / `.pfasm` / `.pfdrw` (JSON with the full history; a drawing also embeds its model)
 - **Import**: STEP AP203 / AP214 / AP242 (B-rep with analytic and B-spline surfaces, tessellated; assemblies are flattened), STL and OBJ, opened as a part or inserted into a part as an import feature
 - **Export**: STEP AP214 (faceted B-rep, one body per component), STL (binary/ASCII), OBJ, PLY, VRML 2.0, glTF 2.0 and 3MF
 - Native Creo files (`.prt`, `.asm`, `.drw`, with or without version number) are recognised and listed, but their geometry is in PTC's closed format and cannot be read; SolidWork explains this and points to a STEP export of the same model
+
+## Screenshot gallery
+
+<details>
+<summary>Explore modelling, simulation, electronics, assemblies and drawings</summary>
+
+### Modelling
+
+| Sketching in 3D (weak + strong dimensions) | Skizzierer-Palette | Extrude tab with Options panel |
+|---|---|---|
+| ![Sketching in 3D (weak + strong dimensions)](docs/screens/sketch.png) | ![Skizzierer-Palette](docs/screens/palette.png) | ![Extrude tab with Options panel](docs/screens/extrude.png) |
+| **Edit Dimensions on the model** | **File menu** | **Datum Plane dialog** |
+| ![Edit Dimensions on the model](docs/screens/editdims.png) | ![File menu](docs/screens/file.png) | ![Datum Plane dialog](docs/screens/dialog.png) |
+| **Selection mini toolbar** | **Round sets, variable radius** | **Standard (ISO/UNC) tapped hole** |
+| ![Selection mini toolbar](docs/screens/mini.png) | ![Round sets, variable radius](docs/screens/roundsets.png) | ![Standard (ISO/UNC) tapped hole](docs/screens/stdhole.png) |
+| **Fill pattern in a sketched region** | **Extrude up to the next surface** | **3D annotations** |
+| ![Fill pattern in a sketched region](docs/screens/fillpattern.png) | ![Extrude up to the next surface](docs/screens/tonext.png) | ![3D annotations](docs/screens/annot3d.png) |
+| **Analysis tools for the active part** | **Whole-loop question for chamfers** | **Relations and local parameters** |
+| ![Analysis tools for the active part](docs/screens/analysis.png) | ![Whole-loop question for chamfers](docs/screens/loop_offer.png) | ![Relations and local parameters](docs/screens/parameters.png) |
+
+### Live-Simulation
+
+| Structural (von Mises stress) | Flow around the part | Thermal |
+|---|---|---|
+| ![Structural (von Mises stress)](docs/screens/sim_structural.png) | ![Flow around the part](docs/screens/sim_fluid.png) | ![Thermal](docs/screens/sim_thermal.png) |
+
+### Leiterplatte (printed circuit boards)
+
+| Schematic with symbol library | Hierarchical sheet and multi-unit op-amp |
+| --- | --- |
+| ![Schematic with symbol library](docs/screens/pcb_sch.png) | ![Hierarchical sheet and multi-unit op-amp](docs/screens/pcb_sch_hier_insheet.png) |
+| **Footprint editor with QFN generator** | **Design rules check** |
+| ![Footprint editor with QFN generator](docs/screens/pcb_brd_fped.png) | ![Design rules check](docs/screens/pcb_drc.png) |
+
+### Assemblies
+
+![Assembly](docs/screens/assembly.png)
+
+| Component Placement tab | Exploded view | Bill of Materials + mass properties | Component opened in context |
+|---|---|---|---|
+| ![Component Placement tab](docs/screens/placement.png) | ![Exploded view](docs/screens/explode.png) | ![Bill of Materials + mass properties](docs/screens/bom.png) | ![Component opened in context](docs/screens/openpart.png) |
+
+### Drawings
+
+![Part drawing](docs/screens/drawing.png)
+
+| Assembly drawing: BOM table + balloons | Created dimensions | Geometric tolerances | Dimension tab: ISO fit H7 |
+|---|---|---|---|
+| ![Assembly drawing: BOM table + balloons](docs/screens/drawing_asm.png) | ![Created dimensions](docs/screens/drawing_annotate.png) | ![Geometric tolerances](docs/screens/drawing_gdt.png) | ![Dimension tab: ISO fit H7](docs/screens/drawing_tolerance.png) |
+
+</details>
 
 ## Controls
 
