@@ -767,6 +767,7 @@ impl App {
             if large(ui, Icon::New, "Neu", true, false).clicked() {
                 self.confirm_new();
             }
+            self.assembler_button(ui);
             if large(ui, Icon::Open, "Öffnen", true, false).clicked() {
                 self.open();
             }

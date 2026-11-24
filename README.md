@@ -8,6 +8,10 @@ The app is written in Rust and includes its own geometry kernel, constraint solv
 
 ![SolidWork workspace showing the feature tree and a bracket with a central boss and four mounting holes](docs/screens/bracket.png)
 
+## New in 1.3.1
+
+Open **Assembler** directly from **Startseite** (beside **Neu**) or **Werkzeuge**. The **Neu** dialog opens with **Baugruppe** selected. Name the assembly, click **OK**, then choose **Modell → Zusammenbauen** to place a part. In an existing assembly, **Werkzeuge → Assembler** returns to its modelling tools.
+
 ## New in 1.3.0
 
 **Circuit boards and enclosures.** Open *Werkzeuge ▸ Manufacture ▸ Leiterplatte* to draw a schematic, transfer its connections to a board and route the copper. You can use a closed part sketch as the board outline. Choose *3D-Modell* to bring the board, copper and components into a mechanical assembly and check where connectors meet the enclosure.

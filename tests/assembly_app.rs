@@ -147,3 +147,45 @@ fn assemble_place_edit_and_save() {
     assert_eq!(a2.data.parts.len(), 1);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn assembler_is_reachable_from_home_and_tools() {
+    use egui::{Event, PointerButton, RawInput, Rect, Shape};
+    use freo::app::Tab;
+
+    fn click_assembler(app: &mut App) {
+        let ctx = egui::Context::default();
+        let mut frame = |events| {
+            let input = RawInput { screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(960.0, 620.0))), events, ..Default::default() };
+            ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| app.ribbon_body(ui));
+            })
+        };
+        let out = frame(vec![]);
+        let pos = out.shapes.iter().find_map(|s| match &s.shape {
+            Shape::Text(t) if t.galley.text() == "Assembler" => Some(t.visual_bounding_rect().center()),
+            _ => None,
+        }).expect("visible Assembler control");
+        for pressed in [true, false] {
+            frame(vec![Event::PointerMoved(pos), Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Default::default() }]);
+        }
+    }
+
+    let mut app = App::new(None);
+    app.go_home();
+    click_assembler(&mut app);
+    assert!(app.new_dialog.take().unwrap().assembly);
+
+    app.new_part_named("TEST");
+    app.tab = Tab::Tools;
+    click_assembler(&mut app);
+    let dialog = app.new_dialog.take().unwrap();
+    assert!(dialog.assembly && !dialog.drawing && !dialog.idea);
+    assert_eq!(dialog.name, "asm0001");
+
+    app.new_assembly("EXISTING");
+    app.tab = Tab::Tools;
+    click_assembler(&mut app);
+    assert!(app.tab == Tab::Model && app.new_dialog.is_none());
+    assert_eq!(app.asm.as_ref().unwrap().data.name, "EXISTING");
+}
