@@ -115,6 +115,22 @@ impl RegenResult {
     pub fn axis(&self, id: u64) -> Option<&AxisInfo> {
         self.axes.iter().find(|a| a.id == id)
     }
+    /// The parts the graphics window draws from (topology, datums, curves, cosmetics) without
+    /// the solid polygons, tool bodies and other per-feature data: cheap enough for every frame.
+    pub fn view_clone(&self) -> RegenResult {
+        RegenResult {
+            topo: self.topo.clone(),
+            planes: self.planes.clone(),
+            axes: self.axes.clone(),
+            points: self.points.clone(),
+            csys: self.csys.clone(),
+            curves: self.curves.clone(),
+            cosmetics: self.cosmetics.clone(),
+            generation: self.generation,
+            time: self.time,
+            ..Default::default()
+        }
+    }
     pub fn frame_for(&self, r: &PlaneRef) -> Option<Frame> {
         match r {
             PlaneRef::Datum(id) => self.plane(*id).map(|p| p.frame),

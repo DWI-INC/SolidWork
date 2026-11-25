@@ -99,31 +99,33 @@ impl App {
             },
         };
         let (o, d) = self.camera.ray(px, size);
+        let proj = self.camera.projector(size);
         let clip = self.section_plane();
         let t = &r.topo;
         // faces
-        let mut best_t = f64::INFINITY;
-        let mut best_face = None;
-        for (pi, p) in t.polys.iter().enumerate() {
+        // only the triangles in boxes the ray passes through (and nearer than the best hit so far)
+        let best = std::cell::Cell::new((f64::INFINITY, None::<usize>));
+        t.ray_accel().visit(o, d, 0.0, || best.get().0, |pi| {
+            let p = &t.polys[pi];
             if let Some((moving, source)) = guide_owner {
                 let body = (t.tags[pi] >> crate::kernel::topology::BODY_SHIFT) as usize;
-                if (source && body != moving) || (!source && body >= moving) { continue; }
+                if (source && body != moving) || (!source && body >= moving) { return; }
             }
             for k in 1..p.len() - 1 {
                 if let Some(tt) = ray_tri(o, d, t.positions[p[0]], t.positions[p[k]], t.positions[p[k + 1]]) {
-                    if tt < best_t {
+                    if tt < best.get().0 {
                         let hit = o + d * tt;
                         if let Some((n, w)) = clip {
                             if hit.dot(n) - w > 0.0 {
                                 continue;
                             }
                         }
-                        best_t = tt;
-                        best_face = Some(t.poly_face[pi]);
+                        best.set((tt, Some(t.poly_face[pi])));
                     }
                 }
             }
-        }
+        });
+        let (best_t, best_face) = best.get();
         let hit_depth = if best_face.is_some() { (o + d * best_t - self.camera.eye()).dot(-self.camera.back()) } else { f64::INFINITY };
         let tol_depth = self.camera.scale * 0.02;
         // Profil/Drehen: the curves of an existing sketch select that sketch
@@ -133,7 +135,7 @@ impl App {
             for c in r.curves.iter().filter(|c| matches!(self.data.feature(c.feature).map(|f| &f.kind), Some(FeatureKind::Sketch(_)))) {
                 for line in &c.polylines {
                     for w in line.windows(2) {
-                        let (Some(pa), Some(pb)) = (self.camera.project(w[0], size), self.camera.project(w[1], size)) else { continue };
+                        let (Some(pa), Some(pb)) = (proj.project(w[0]), proj.project(w[1])) else { continue };
                         let (dist, tt) = seg_dist(px, (pa.0, pa.1), (pb.0, pb.1));
                         if dist < best.0 && pa.2 + (pb.2 - pa.2) * tt as f64 <= hit_depth + tol_depth {
                             best = (dist, Some(c.feature));
@@ -153,7 +155,7 @@ impl App {
                 let segs = if c.closed { n } else { n - 1 };
                 for i in 0..segs {
                     let (a, b) = (c.points[i], c.points[(i + 1) % n]);
-                    let (Some(pa), Some(pb)) = (self.camera.project(a, size), self.camera.project(b, size)) else { continue };
+                    let (Some(pa), Some(pb)) = (proj.project(a), proj.project(b)) else { continue };
                     let (dist, tt) = seg_dist(px, (pa.0, pa.1), (pb.0, pb.1));
                     let depth = pa.2 + (pb.2 - pa.2) * tt as f64;
                     if dist < best.0 && depth <= hit_depth + tol_depth {
@@ -167,7 +169,7 @@ impl App {
         }
         if want_point && self.show_points {
             for p in &r.points {
-                if let Some(s) = self.camera.project(p.p, size) {
+                if let Some(s) = proj.project(p.p) {
                     if ((s.0 - px.0).powi(2) + (s.1 - px.1).powi(2)).sqrt() < 7.0 {
                         return Some(Pick::Point(p.id));
                     }
@@ -178,7 +180,7 @@ impl App {
             let mut best = (6.0f32, None);
             for a in &r.axes {
                 let (p0, p1) = axis_segment(a, r);
-                let (Some(s0), Some(s1)) = (self.camera.project(p0, size), self.camera.project(p1, size)) else { continue };
+                let (Some(s0), Some(s1)) = (proj.project(p0), proj.project(p1)) else { continue };
                 let (dist, _) = seg_dist(px, (s0.0, s0.1), (s1.0, s1.1));
                 if dist < best.0 {
                     best = (dist, Some(a.id));

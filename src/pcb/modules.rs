@@ -134,41 +134,122 @@ impl Module {
 
     /// Nominal connector and component envelopes above the module's own laminate.
     pub fn hardware(self, surface: f64) -> Model {
+        use super::model3d::{receptacle, Receptacle};
+        let z = surface;
         let mut m = Model::default();
-        let mut block = |mat, x0, y0, x1, y1, z0, z1| m.boxx(mat, [x0, y0, surface + z0], [x1, y1, surface + z1]);
+        // plated ring and solder joint around a through-hole pin on the top side
+        let joint = |m: &mut Model, q: P| {
+            m.annulus(Mat::Rgb(205, 205, 198), q, 0.45, 0.85, z + 0.02, 16, false);
+            m.cone(Mat::Rgb(190, 192, 190), [q.x, q.y, z + 0.02], [q.x, q.y, z + 0.55], 0.62, 0.36, 12);
+        };
         match self {
             Self::Esp32 => {
-                block(Mat::Green, 4.97, -6.04, 22.97, 19.46, 0.0, 0.8);
-                block(Mat::Metal, 5.2, 0.7, 22.7, 19.1, 0.8, 3.2);
-                block(Mat::Metal, 10.0, 42.8, 17.9, 49.3, 0.0, 3.0);
-                block(Mat::Plastic, 10.0, 29.0, 16.0, 35.0, 0.0, 1.2);
-                for x in [5.2, 20.0] {
-                    block(Mat::Metal, x, 40.0, x + 2.8, 44.5, 0.0, 2.4);
+                // WROOM-32E: module laminate with the antenna overhanging the top edge
+                let module_pcb = Mat::Rgb(40, 44, 50);
+                m.boxx(module_pcb, [4.97, -6.04, z], [22.97, 19.46, z + 0.8]);
+                for i in 0..10 {
+                    // castellated pads down both sides
+                    let y = 1.9 + i as f64 * 1.27 * 1.35;
+                    for (x0, x1) in [(4.95, 5.6), (22.34, 22.99)] {
+                        m.boxx(Mat::Gold, [x0, y - 0.45, z], [x1, y + 0.45, z + 0.82]);
+                    }
                 }
-                for x in [0.0, 25.4] {
-                    block(Mat::Plastic, x, 0.0, x + 2.54, 48.26, -4.1, -1.6);
+                // meandered PCB antenna
+                let ant = Mat::Gold;
+                let (top, bot) = (-5.3, -1.6);
+                m.boxx(ant, [6.0, bot - 0.5, z + 0.8], [6.5, -0.6, z + 0.83]);
+                let mut x = 6.0;
+                for k in 0..8 {
+                    m.boxx(ant, [x, top, z + 0.8], [x + 0.5, bot, z + 0.83]);
+                    let y = if k % 2 == 0 { top } else { bot - 0.5 };
+                    m.boxx(ant, [x, y, z + 0.8], [x + 2.0, y + 0.5, z + 0.83]);
+                    x += 1.5;
+                }
+                m.boxx(ant, [x, top, z + 0.8], [x + 0.5, bot, z + 0.83]);
+                // shielding can with a pressed edge
+                m.rbox(Mat::Rgb(205, 207, 210), [5.2, 0.7, z + 0.8], [22.7, 19.1, z + 2.9], 0.5);
+                m.body(Mat::Metal, [5.5, 1.0, z + 2.9], [22.4, 18.8, z + 3.2], 0.25);
+                // Micro-USB at the bottom edge
+                receptacle(&mut m, Receptacle::MicroB, p(13.97, 49.0), p(0.0, 1.0), z);
+                // USB-UART bridge, regulator, EN / BOOT buttons, passives
+                m.body(Mat::Plastic, [11.0, 31.0, z], [16.0, 36.0, z + 0.9], 0.08);
+                m.cyl(Mat::Rgb(90, 90, 92), [11.6, 31.6, z + 0.9], [11.6, 31.6, z + 0.91], 0.25, 10);
+                m.body(Mat::Plastic, [17.5, 23.0, z], [24.0, 26.5, z + 1.6], 0.15);
+                m.boxx(Mat::Metal, [19.2, 21.6, z], [22.3, 23.0, z + 0.2]);
+                for x in [18.0, 20.75, 23.5] {
+                    m.boxx(Mat::Metal, [x - 0.35, 26.5, z], [x + 0.35, 27.6, z + 0.2]);
+                }
+                for x in [5.2, 20.0] {
+                    m.boxx(Mat::Rgb(60, 62, 66), [x, 40.0, z], [x + 2.8, 44.5, z + 1.4]);
+                    m.boxx(Mat::Metal, [x + 0.2, 40.2, z + 1.4], [x + 2.6, 44.3, z + 1.55]);
+                    m.cyl(Mat::Plastic, [x + 1.4, 42.25, z + 1.55], [x + 1.4, 42.25, z + 2.3], 0.75, 16);
+                }
+                for (i, (x, y)) in [(9.0, 25.0), (9.0, 27.0), (19.0, 30.0), (19.0, 32.0), (9.0, 38.0), (18.0, 38.0), (12.0, 39.5)].into_iter().enumerate() {
+                    let mat = if i % 2 == 0 { Mat::Ceramic } else { Mat::Plastic };
+                    m.boxx(mat, [x - 0.8, y - 0.4, z], [x + 0.8, y + 0.4, z + 0.5]);
+                    for sx in [-0.8, 0.5] {
+                        m.boxx(Mat::Metal, [x + sx, y - 0.41, z], [x + sx + 0.3, y + 0.41, z + 0.51]);
+                    }
                 }
             }
             Self::Pi4 => {
-                block(Mat::Plastic, 7.1, 0.96, 57.9, 6.04, 0.0, 2.5);
-                block(Mat::Metal, 65.5, 2.3, 88.0, 18.2, 0.0, 13.5); // Ethernet
-                for y in [20.5, 38.8] {
-                    block(Mat::Metal, 70.3, y, 88.0, y + 13.4, 0.0, 16.0);
+                // GPIO header J8 and the PoE header
+                m.boxx(Mat::Plastic, [7.1, 0.96, z], [57.9, 6.04, z + 2.5]);
+                for i in 0..4 {
+                    let q = p(76.0 + (i % 2) as f64 * 2.54, 3.0 + (i / 2) as f64 * 2.54);
+                    m.boxx(Mat::Plastic, [q.x - 1.24, q.y - 1.24, z], [q.x + 1.24, q.y + 1.24, z + 2.5]);
+                    m.boxx(Mat::Gold, [q.x - 0.32, q.y - 0.32, z], [q.x + 0.32, q.y + 0.32, z + 8.5]);
                 }
-                block(Mat::Metal, 6.6, 50.0, 15.8, 57.3, 0.0, 3.2); // USB-C
-                for x in [22.4, 35.9] {
-                    block(Mat::Metal, x, 50.0, x + 7.2, 57.0, 0.0, 3.0);
+                // right edge: USB 2.0 stack, USB 3.0 stack (blue tongues), Gigabit Ethernet
+                for (y, tongue) in [(9.0, Mat::Plastic), (27.0, Mat::Rgb(30, 95, 210))] {
+                    for level in 0..2 {
+                        receptacle(&mut m, Receptacle::TypeA(tongue), p(87.0, y), p(1.0, 0.0), z + level as f64 * 7.8);
+                    }
                 }
-                block(Mat::Plastic, 54.1, 44.5, 60.1, 57.0, 0.0, 6.0); // A/V
-                block(Mat::Metal, 21.6, 16.0, 36.6, 31.0, 0.0, 2.4);
-                block(Mat::Plastic, 39.0, 16.0, 50.8, 31.0, 0.0, 1.5); // LPDDR4
+                receptacle(&mut m, Receptacle::Rj45, p(87.1, 45.75), p(1.0, 0.0), z);
+                // bottom edge: USB-C power, two micro-HDMI, A/V jack
+                receptacle(&mut m, Receptacle::TypeC, p(11.2, 57.3), p(0.0, 1.0), z);
+                for x in [26.0, 39.5] {
+                    receptacle(&mut m, Receptacle::MicroHdmi, p(x, 57.0), p(0.0, 1.0), z);
+                }
+                m.rbox(Mat::Plastic, [50.6, 45.0, z], [56.4, 57.2, z + 5.9], 0.3);
+                m.cyl(Mat::Plastic, [53.5, 57.2, z + 3.0], [53.5, 59.5, z + 3.0], 3.0, 32);
+                m.cyl(Mat::Rgb(18, 18, 20), [53.5, 59.5, z + 3.0], [53.5, 59.52, z + 3.0], 1.8, 24);
+                // SoC with heat spreader, LPDDR4, USB controller, PMIC, Wi-Fi can
+                m.boxx(Mat::Rgb(20, 70, 40), [21.4, 15.8, z], [36.8, 31.2, z + 1.0]);
+                m.rbox(Mat::Metal, [22.0, 16.4, z + 1.0], [36.2, 30.6, z + 2.4], 1.2);
+                m.body(Mat::Plastic, [39.0, 16.0, z], [50.8, 31.0, z + 1.2], 0.15);
+                m.body(Mat::Plastic, [59.5, 24.0, z], [65.5, 30.0, z + 0.9], 0.1);
+                m.body(Mat::Plastic, [49.5, 34.0, z], [54.5, 39.0, z + 0.9], 0.1);
+                m.rbox(Mat::Rgb(200, 202, 205), [6.5, 10.0, z], [18.5, 21.0, z + 1.5], 0.4);
+                m.cyl(Mat::Rgb(170, 172, 176), [12.5, 15.5, z + 1.5], [12.5, 15.5, z + 1.52], 2.4, 24);
+                // camera (CSI) and display (DSI) FPC connectors with dark latches
+                m.boxx(INSERT, [44.0, 33.0, z], [47.4, 54.0, z + 5.5]);
+                m.boxx(Mat::Rgb(40, 40, 42), [44.4, 33.3, z + 5.5], [46.0, 53.7, z + 5.8]);
+                m.boxx(INSERT, [1.2, 11.0, z], [4.6, 33.0, z + 5.5]);
+                m.boxx(Mat::Rgb(40, 40, 42), [2.9, 11.3, z + 5.5], [4.4, 32.7, z + 5.8]);
+                // passives sprinkled around the SoC
+                for (i, (x, y)) in [(20.0, 14.0), (38.0, 14.0), (20.0, 33.0), (38.0, 33.0), (57.0, 18.0), (57.0, 33.0), (66.5, 21.0), (12.0, 26.0), (16.0, 26.0), (30.0, 34.0)].into_iter().enumerate() {
+                    let mat = if i % 3 == 0 { Mat::Plastic } else { Mat::Ceramic };
+                    m.boxx(mat, [x - 0.5, y - 0.25, z], [x + 0.5, y + 0.25, z + 0.35]);
+                    for sx in [-0.5, 0.32] {
+                        m.boxx(Mat::Metal, [x + sx, y - 0.26, z], [x + sx + 0.18, y + 0.26, z + 0.36]);
+                    }
+                }
             }
         }
         let (lo, hi) = if self == Self::Esp32 { (-8.0, 0.8) } else { (0.0, 8.5) };
         for pin in self.pins() {
             let q = pin.pos;
             m.boxx(Mat::Gold, [q.x - 0.32, q.y - 0.32, surface + lo], [q.x + 0.32, q.y + 0.32, surface + hi]);
+            if self == Self::Esp32 {
+                // individual spacers on the pins below the board
+                m.boxx(Mat::Plastic, [q.x - 1.22, q.y - 1.22, surface - 4.1], [q.x + 1.22, q.y + 1.22, surface - 1.6]);
+                joint(&mut m, q);
+            }
         }
         m
     }
 }
+
+const INSERT: Mat = Mat::Rgb(236, 236, 230);

@@ -513,6 +513,7 @@ impl eframe::App for App {
             }
         }
 
+        self.poll_preview(ctx);
         self.sim_tick(ctx);
         self.print_tick(ctx);
         self.cnc_tick(ctx);

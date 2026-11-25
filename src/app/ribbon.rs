@@ -1798,7 +1798,7 @@ impl App {
                     self.camera.scale *= 1.25;
                 }
                 if tiny(ui, Icon::Repaint, "Neu zeichnen", true, false, false).clicked() {
-                    self.buffers = Arc::new(render::ModelBuffers { generation: 0, solid: vec![], edges: vec![] });
+                    self.buffers = Arc::new(render::ModelBuffers::default());
                 }
             });
             let (top, bot) = split(ui, Icon::SavedViews, "Gespeicherte\nOrientierungen", true, false);

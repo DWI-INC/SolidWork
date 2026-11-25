@@ -227,21 +227,84 @@ fn overhang_gets_support_only_when_enabled() {
     assert_eq!(count(&r, Role::Support), 0);
     // the roof's underside is printed as a bridge without support
     assert!(count(&r, Role::Bridge) > 0);
-    s.process.support = true;
-    let r = run(&mesh, &s);
-    assert!(count(&r, Role::Support) > 0);
-    assert!(count(&r, Role::SupportInterface) > 0);
-    // support stops below the roof (top z distance) and stays clear of the post (xy distance)
-    let roof_layer = r.plan.layers.iter().position(|l| l.z > 10.0 + 1e-6).unwrap();
-    for (i, l) in r.plan.layers.iter().enumerate() {
-        for p in l.paths.iter().filter(|p| matches!(p.role, Role::Support | Role::SupportInterface)) {
-            assert!(i + 1 < roof_layer, "support on layer {} under the roof at {}", i, roof_layer);
-            for pt in &p.pts {
-                let inside_post = (pt[0] - 130.0).abs() < 5.0 + 0.45 && (pt[1] - 130.0).abs() < 5.0 + 0.45;
-                assert!(!inside_post, "support at {:?} touches the post", pt);
+    // the slicer says the 15 mm cantilevers need support
+    assert!(r.plan.support.needs_support(), "{:?}", r.plan.support);
+    assert!(r.out.warnings.iter().any(|w| w.contains("Stützen einschalten")), "{:?}", r.out.warnings);
+    for style in SupportStyle::ALL {
+        s.process.support = true;
+        s.process.support_style = style;
+        let r = run(&mesh, &s);
+        assert!(count(&r, Role::Support) > 0, "{:?}", style);
+        assert!(count(&r, Role::SupportInterface) > 0, "{:?}", style);
+        assert!(!r.out.warnings.iter().any(|w| w.contains("Stützen")), "{:?}", r.out.warnings);
+        // support stops below the roof (top z distance) and stays clear of the post (xy distance)
+        let roof_layer = r.plan.layers.iter().position(|l| l.z > 10.0 + 1e-6).unwrap();
+        for (i, l) in r.plan.layers.iter().enumerate() {
+            for p in l.paths.iter().filter(|p| matches!(p.role, Role::Support | Role::SupportInterface)) {
+                assert!(i + 1 < roof_layer, "{:?}: support on layer {} under the roof at {}", style, i, roof_layer);
+                for pt in &p.pts {
+                    let inside_post = (pt[0] - 130.0).abs() < 5.0 + 0.45 && (pt[1] - 130.0).abs() < 5.0 + 0.45;
+                    assert!(!inside_post, "{:?}: support at {:?} touches the post", style, pt);
+                }
             }
         }
+        if style == SupportStyle::Tree {
+            let rep = &r.plan.support;
+            assert!(rep.tips > 0 && rep.on_bed > 0 && rep.stranded == 0, "{:?}", rep);
+            // the branches merge: fewer, thicker trunks reach the bed than tips start
+            assert!(rep.on_bed < rep.tips, "{:?}", rep);
+            // trees use less plastic than grid columns under the whole roof
+            let grid = {
+                let mut g = s.clone();
+                g.process.support_style = SupportStyle::Grid;
+                run(&mesh, &g)
+            };
+            let sup_len = |r: &slicer::Sliced| r.plan.layers.iter().flat_map(|l| &l.paths).filter(|p| p.role == Role::Support).map(|p| p.len()).sum::<f64>();
+            assert!(sup_len(&r) < sup_len(&grid), "tree {:.0} mm, grid {:.0} mm", sup_len(&r), sup_len(&grid));
+        }
     }
+}
+
+/// Two 5 mm posts 10 mm apart under a 3 mm roof: the gap is a bridge.
+fn bridge_part(gap: f64) -> Mesh {
+    let mut m = ModelData::new_part("BRIDGE");
+    let x = gap / 2.0 + 2.5;
+    extrude(&mut m, 10, Sketch::rect(5.0, 10.0, -x, 0.0), 13.0, false, PlaneRef::Datum(TOP_ID));
+    extrude(&mut m, 11, Sketch::rect(5.0, 10.0, x, 0.0), 13.0, false, PlaneRef::Datum(TOP_ID));
+    let FeatureKind::Extrude(mut e) = FeatureKind::new_extrude() else { unreachable!() };
+    e.plane = Some(PlaneRef::Datum(FRONT_ID));
+    e.sketch = Sketch::rect(gap + 10.0, 3.0, 0.0, 11.5);
+    e.depth = Dim::v(5.0);
+    e.side2 = Side2::Blind;
+    e.depth2 = Dim::v(5.0);
+    m.features.push(Feature { id: 20, name: "Dach".into(), suppressed: false, hidden: false, kind: FeatureKind::Extrude(e) });
+    part(&m)
+}
+
+#[test]
+fn short_bridges_need_no_support() {
+    let mesh = bridge_part(10.0);
+    let count = |r: &slicer::Sliced, role: Role| r.plan.layers.iter().flat_map(|l| &l.paths).filter(|p| p.role == role).count();
+    let mut s = settings();
+    s.process.support = true;
+    for style in SupportStyle::ALL {
+        s.process.support_style = style;
+        let r = run(&mesh, &s);
+        assert!(r.plan.support.bridges > 0, "{:?}", r.plan.support);
+        assert_eq!(count(&r, Role::Support), 0, "{:?}", style);
+        assert!(count(&r, Role::Bridge) > 0);
+    }
+    // without bridge detection, or longer than the printer can bridge, it is supported
+    s.process.support_smart_bridges = false;
+    assert!(count(&run(&mesh, &s), Role::Support) > 0);
+    s.process.support_smart_bridges = true;
+    s.process.bridge_max = 6.0;
+    assert!(count(&run(&mesh, &s), Role::Support) > 0);
+    // support off: a short bridge is no reason to warn
+    s.process.support = false;
+    s.process.bridge_max = 12.0;
+    let r = run(&mesh, &s);
+    assert!(!r.plan.support.needs_support(), "{:?}", r.plan.support);
 }
 
 #[test]
@@ -301,4 +364,40 @@ fn brim_skirt_ironing_fuzzy() {
     // fuzzy skin moves the outer wall off the straight edge
     let wall = r.plan.layers[20].paths.iter().find(|p| p.role == Role::OuterWall).unwrap();
     assert!(wall.pts.len() > 40);
+}
+
+#[test]
+fn z_offset_advice_and_test_print() {
+    use freo::slicer::zoffset;
+    let mut s = settings();
+    // PLA on a smooth plate: nothing to change
+    s.printer.plate = Plate::SmoothPei;
+    let a = zoffset::advise(&s, None);
+    assert!(a.adjust.abs() < 1e-9, "{}", a.adjust);
+    assert!(!a.calibrate.is_empty() && !a.save.is_empty());
+    // PETG raises the nozzle, a textured plate lowers it
+    s.filament = printers::filament_presets().into_iter().find(|f| f.material == Material::Petg).unwrap();
+    assert!((zoffset::advise(&s, None).adjust - 0.04).abs() < 1e-9);
+    s.printer.plate = Plate::TexturedPei;
+    assert!((zoffset::advise(&s, None).adjust - 0.01).abs() < 1e-9);
+    assert_eq!(zoffset::live_command(Flavor::Klipper, -0.02), "SET_GCODE_OFFSET Z_ADJUST=-0.020 MOVE=1");
+    assert_eq!(zoffset::live_command(Flavor::Marlin, 0.05), "M290 Z+0.050");
+    // a sliced part adds advice about its first layer
+    let r = run(&block(), &s);
+    let a = zoffset::advise(&s, Some(&r.plan));
+    assert!(a.squish > 1.6);
+    // test print: five patches, one per offset, the nozzle rising from left to right
+    let offs = zoffset::test_offsets(a.adjust);
+    assert_eq!(offs.len(), 5);
+    let (plan, g) = zoffset::test_print(&s, &offs);
+    assert_eq!(plan.layers.len(), 5);
+    let fh = s.process.first_layer_height;
+    for (l, d) in plan.layers.iter().zip(&offs) {
+        assert!((l.z - (fh + d)).abs() < 1e-9);
+    }
+    let rb = read(&g);
+    assert!(rb.extrude_moves > 50 && rb.e > 10.0);
+    assert!(rb.zs.iter().all(|z| *z < fh + 0.2), "{:?}", rb.zs);
+    assert!(rb.min[0] > 0.0 && rb.max[0] < s.printer.bed_x);
+    assert!(g.starts_with("; SolidWork Z-Offset-Test"));
 }

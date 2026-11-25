@@ -23,6 +23,7 @@ pub mod edgeloop;
 pub mod export;
 pub mod featuretab;
 pub mod gdt;
+pub mod gizmo;
 pub mod gfxbar;
 pub mod icons;
 pub mod idea;
@@ -240,6 +241,31 @@ pub struct Windows {
     pub new_drawing: Option<drawui::NewDrawing>,
 }
 
+/// A preview regeneration on a worker thread (`App::async_preview`).
+pub struct PreviewJob {
+    rx: std::sync::mpsc::Receiver<RegenResult>,
+    /// the feature being defined it is for
+    feature: u64,
+    /// the newest change made while the worker was busy
+    queued: Option<PreviewReq>,
+}
+
+/// What a preview regenerates: the feature after the snapshot, or all features from scratch.
+pub struct PreviewReq {
+    data: Option<ModelData>,
+    snap: Option<Arc<regen::Snapshot>>,
+    feats: Vec<Feature>,
+}
+
+impl PreviewReq {
+    fn run(&self, data: &ModelData) -> RegenResult {
+        match &self.snap {
+            Some(snap) => regen::run_after(data, snap, &self.feats),
+            None => regen::run_features(data, &self.feats, None),
+        }
+    }
+}
+
 pub struct App {
     brand_icon: Option<egui::TextureHandle>,
     pub idea: Option<idea::IdeaSession>,
@@ -248,7 +274,15 @@ pub struct App {
     pub context: Option<RegenResult>,
     pub preview: Option<RegenResult>,
     /// regeneration state before the feature being defined: its preview starts from here
-    pub context_snap: Option<regen::Snapshot>,
+    pub context_snap: Option<Arc<regen::Snapshot>>,
+    /// regenerate the preview of the feature being defined on a worker thread when it takes
+    /// long (the window stays responsive on large parts); off by default (tests, scripting)
+    pub async_preview: bool,
+    pub preview_job: Option<PreviewJob>,
+    /// the feature `preview` was made for by the worker
+    pub preview_of: Option<u64>,
+    /// highlight triangles of the selected and the preselected faces: (generation, faces, data)
+    pub hl_cache: [Option<(u64, Vec<usize>, Arc<Vec<f32>>)>; 2],
     /// regeneration state kept between changes: only what changed is regenerated
     pub regen_cache: regen::Cache,
     pub selection: Vec<Pick>,
@@ -349,6 +383,10 @@ impl App {
             context: None,
             preview: None,
             context_snap: None,
+            async_preview: false,
+            preview_job: None,
+            preview_of: None,
+            hl_cache: [None, None],
             regen_cache: regen::Cache::default(),
             selection: vec![],
             hover: None,
@@ -383,7 +421,7 @@ impl App {
             redo: vec![],
             camera: Camera::default(),
             renderer: gl.map(|g| Arc::new(Mutex::new(Renderer::new(g)))),
-            buffers: Arc::new(ModelBuffers { generation: 0, solid: vec![], edges: vec![] }),
+            buffers: Arc::new(ModelBuffers::default()),
             fit_pending: true,
             renaming: None,
             viewport_size: (800.0, 600.0),
@@ -464,33 +502,22 @@ impl App {
     }
 
     pub fn rebuild_buffers(&mut self) {
-        let r = self.displayed();
-        if self.buffers.generation == r.generation {
+        if self.buffers.generation == self.displayed().generation || self.update_moved_body() {
             return;
         }
+        let r = self.displayed();
         let t = &r.topo;
         // assembly components carry their own colour; parts are tinted by the frame colour
         let asm = self.asm_view();
         let mut solid = Vec::with_capacity(t.polys.len() * 27);
-        for (pi, p) in t.polys.iter().enumerate() {
-            let body = (t.tags[pi] >> crate::kernel::topology::BODY_SHIFT) as usize;
-            let c = if let Some(asm) = asm {
-                asm.surface_colors.get(&t.tags[pi]).or_else(|| body.checked_sub(1).and_then(|b| asm.body_colors.get(b))).copied().unwrap_or([1.0; 3])
-            } else if !self.data.feature_colors.is_empty() {
-                r.tag_owner.get(&t.tags[pi]).and_then(|id| self.data.feature_colors.get(id)).copied().unwrap_or(self.data.appearance.color)
-            } else { [1.0; 3] };
-            for k in 1..p.len() - 1 {
-                let tri = [0, k, k + 1].map(|j| (t.positions[p[j]], t.vnormals[pi][j]));
-                // a threaded stretch of a hole or shaft shows its turns instead of the smooth wall
-                let mut pieces = vec![tri];
-                for co in &r.cosmetics {
-                    pieces = pieces.iter().flat_map(|q| crate::model::threads::clip_wall(co, q).unwrap_or_else(|| vec![*q])).collect();
-                }
-                for q in pieces {
-                    for (v, n) in q {
-                        solid.extend_from_slice(&[v.x as f32, v.y as f32, v.z as f32, n.x as f32, n.y as f32, n.z as f32, c[0], c[1], c[2]]);
-                    }
-                }
+        let mut bodies: std::collections::HashMap<u32, (std::ops::Range<usize>, std::ops::Range<usize>)> = Default::default();
+        let color = self.poly_colors(r);
+        for pi in 0..t.polys.len() {
+            let start = solid.len();
+            Self::poly_floats(r, pi, color(pi), &mut solid);
+            if asm.is_some() {
+                let e = bodies.entry(t.tags[pi] >> crate::kernel::topology::BODY_SHIFT).or_insert((start..start, 0..0));
+                e.0.end = solid.len();
             }
         }
         for co in &r.cosmetics {
@@ -504,6 +531,13 @@ impl App {
         for &(a, b) in &t.draw_edges {
             for v in [t.positions[a], t.positions[b]] {
                 edges.extend_from_slice(&[v.x as f32, v.y as f32, v.z as f32]);
+            }
+        }
+        if let Some(asm) = asm {
+            for s in asm.spans.values() {
+                if let Some(e) = bodies.get_mut(&(s.body >> crate::kernel::topology::BODY_SHIFT)) {
+                    e.1 = s.draw_edges.start * 6..s.draw_edges.end * 6;
+                }
             }
         }
         // Sammelflächen: Creo's purple sheets with their open edges (the shader lights both sides
@@ -525,7 +559,100 @@ impl App {
                 }
             }
         }
-        self.buffers = Arc::new(ModelBuffers { generation: r.generation, solid, edges });
+        let generation = r.generation;
+        drop(color);
+        self.buffers = Arc::new(ModelBuffers { generation, solid, edges, bodies, dirty: None });
+    }
+
+    /// Colour of each topology polygon of `r` (by polygon index).
+    fn poly_colors<'a>(&'a self, r: &'a RegenResult) -> impl Fn(usize) -> [f32; 3] + 'a {
+        let t = &r.topo;
+        let asm = self.asm_view();
+        let feature_colors = !self.data.feature_colors.is_empty();
+        let glow = self.asm.as_ref().map(|a| &a.glow).filter(|g| !g.is_empty() && asm.is_some_and(|v| self.asm.as_ref().is_some_and(|a| std::ptr::eq(v, &a.res))));
+        move |pi: usize| {
+            if let Some(c) = glow.and_then(|g| g.get(&t.tags[pi])) {
+                return *c;
+            }
+            if let Some(asm) = asm {
+                let body = (t.tags[pi] >> crate::kernel::topology::BODY_SHIFT) as usize;
+                (!asm.surface_colors.is_empty()).then(|| asm.surface_colors.get(&t.tags[pi])).flatten().or_else(|| body.checked_sub(1).and_then(|b| asm.body_colors.get(b))).copied().unwrap_or([1.0; 3])
+            } else if feature_colors {
+                r.tag_owner.get(&t.tags[pi]).and_then(|id| self.data.feature_colors.get(id)).copied().unwrap_or(self.data.appearance.color)
+            } else {
+                [1.0; 3]
+            }
+        }
+    }
+
+    /// The shaded triangles of topology polygon `pi` (pos, normal, colour per vertex).
+    fn poly_floats(r: &RegenResult, pi: usize, c: [f32; 3], solid: &mut Vec<f32>) {
+        let t = &r.topo;
+        let p = &t.polys[pi];
+        let vn = &t.vnormals[pi];
+        let mut push = |q: &[(V3, V3); 3]| {
+            for (v, n) in q {
+                solid.extend_from_slice(&[v.x as f32, v.y as f32, v.z as f32, n.x as f32, n.y as f32, n.z as f32, c[0], c[1], c[2]]);
+            }
+        };
+        for k in 1..p.len() - 1 {
+            let tri = [(t.positions[p[0]], vn[0]), (t.positions[p[k]], vn[k]), (t.positions[p[k + 1]], vn[k + 1])];
+            if r.cosmetics.is_empty() {
+                push(&tri);
+                continue;
+            }
+            // a threaded stretch of a hole or shaft shows its turns instead of the smooth wall
+            let mut pieces = vec![tri];
+            for co in &r.cosmetics {
+                pieces = pieces.iter().flat_map(|q| crate::model::threads::clip_wall(co, q).unwrap_or_else(|| vec![*q])).collect();
+            }
+            for q in &pieces {
+                push(q);
+            }
+        }
+    }
+
+    /// A component dragged in the placement preview (`AsmResult::moved`): rewrites only its
+    /// floats in the current buffers. False when the buffers must be rebuilt.
+    fn update_moved_body(&mut self) -> bool {
+        let r = self.displayed();
+        let Some(asm) = self.asm_view() else { return false };
+        let Some((base, id)) = asm.moved else { return false };
+        if base != self.buffers.generation || !r.quilts.is_empty() {
+            return false;
+        }
+        let Some(span) = asm.spans.get(&id) else { return false };
+        // a moved thread changes how other walls are cut: rebuild everything then
+        if !span.cosmetics.is_empty() {
+            return false;
+        }
+        let Some((sr, er)) = self.buffers.bodies.get(&(span.body >> crate::kernel::topology::BODY_SHIFT)).cloned() else { return false };
+        let t = &r.topo;
+        let mut solid = Vec::with_capacity(sr.len());
+        let color = self.poly_colors(r);
+        for pi in span.polys.clone() {
+            Self::poly_floats(r, pi, color(pi), &mut solid);
+        }
+        if solid.len() != sr.len() || er.len() != span.draw_edges.len() * 6 {
+            return false;
+        }
+        let generation = r.generation;
+        let mut edges = Vec::with_capacity(er.len());
+        for &(a, b) in &t.draw_edges[span.draw_edges.clone()] {
+            for v in [t.positions[a], t.positions[b]] {
+                edges.extend_from_slice(&[v.x as f32, v.y as f32, v.z as f32]);
+            }
+        }
+        drop(color);
+        // the previous frame's paint callback may still hold the buffers: copy only then
+        let mut buf = std::mem::take(&mut self.buffers);
+        let b = Arc::make_mut(&mut buf);
+        b.solid[sr.clone()].copy_from_slice(&solid);
+        b.edges[er.clone()].copy_from_slice(&edges);
+        b.generation = generation;
+        b.dirty = Some((base, sr, er));
+        self.buffers = buf;
+        true
     }
 
     // ---------- regeneration / undo ----------
@@ -816,6 +943,7 @@ impl App {
             self.context = None;
             self.preview = None;
             self.context_snap = None;
+            self.preview_job = None;
             return;
         };
         let before = &self.data.features[..ed.index.min(self.data.features.len())];
@@ -828,12 +956,12 @@ impl App {
                 } else {
                     regen::run_after(&self.data, &snap, &[])
                 });
-                self.context_snap = Some(snap);
+                self.context_snap = Some(Arc::new(snap));
             }
             None => {
                 let (ctx, snap) = regen::run_snapshot(&self.data, before);
                 self.context = Some(ctx);
-                self.context_snap = Some(snap);
+                self.context_snap = Some(Arc::new(snap));
             }
         }
         self.update_preview();
@@ -842,17 +970,100 @@ impl App {
     pub fn update_preview(&mut self) {
         let Some(ed) = &self.editor else {
             self.preview = None;
+            self.preview_job = None;
             return;
         };
         let before = &self.data.features[..ed.index.min(self.data.features.len())];
         // only the feature being defined is regenerated, on top of the state before it
-        if let Some(snap) = self.context_snap.as_ref().filter(|s| s.fits(&self.data, before)) {
-            self.preview = Some(regen::run_after(&self.data, snap, std::slice::from_ref(&ed.feature)));
+        let req = match self.context_snap.as_ref().filter(|s| s.fits(&self.data, before)) {
+            Some(snap) => PreviewReq { data: None, snap: Some(snap.clone()), feats: vec![ed.feature.clone()] },
+            None => {
+                let mut feats = before.to_vec();
+                feats.push(ed.feature.clone());
+                PreviewReq { data: None, snap: None, feats }
+            }
+        };
+        if !self.async_preview {
+            self.preview = Some(req.run(&self.data));
             return;
         }
-        let mut feats = before.to_vec();
-        feats.push(ed.feature.clone());
-        self.preview = Some(regen::run_features(&self.data, &feats, None));
+        let feature = ed.feature.id;
+        let req = PreviewReq { data: Some(self.data.clone()), ..req };
+        match &mut self.preview_job {
+            // the worker is busy: this request replaces any older one waiting for it
+            Some(job) if job.feature == feature => job.queued = Some(req),
+            _ => self.start_preview_job(feature, req, std::time::Duration::from_millis(25)),
+        }
+    }
+
+    /// Runs a preview on a worker; a result within `wait` is taken at once, as without a worker.
+    fn start_preview_job(&mut self, feature: u64, req: PreviewReq, wait: std::time::Duration) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut req = req;
+            let data = req.data.take().unwrap_or_else(|| ModelData::new_part(""));
+            let _ = tx.send(req.run(&data));
+        });
+        match rx.recv_timeout(wait) {
+            Ok(r) => {
+                self.preview = Some(r);
+                self.preview_of = Some(feature);
+                self.preview_job = None;
+            }
+            Err(_) => {
+                // until it is ready the window shows the model before the feature, never the
+                // preview of another feature
+                if self.preview_of != Some(feature) {
+                    self.preview = None;
+                }
+                self.preview_job = Some(PreviewJob { rx, feature, queued: None });
+            }
+        }
+    }
+
+    /// Takes a finished background preview (called every frame) and starts the newest waiting one.
+    pub fn poll_preview(&mut self, ctx: &egui::Context) {
+        let Some(job) = &mut self.preview_job else { return };
+        let done = match job.rx.try_recv() {
+            Ok(r) => Some(Some(r)),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(None),
+            Err(std::sync::mpsc::TryRecvError::Empty) => None,
+        };
+        let Some(result) = done else {
+            ctx.request_repaint_after(std::time::Duration::from_millis(16));
+            return;
+        };
+        let job = self.preview_job.take().unwrap();
+        if self.editor.as_ref().is_some_and(|e| e.feature.id == job.feature) {
+            if let Some(r) = result {
+                self.preview = Some(r);
+                self.preview_of = Some(job.feature);
+            }
+            if let Some(next) = job.queued {
+                self.start_preview_job(job.feature, next, std::time::Duration::ZERO);
+            }
+        }
+        ctx.request_repaint();
+    }
+
+    /// Waits for the background preview to be current (before the feature is finished).
+    pub fn settle_preview(&mut self) {
+        let Some(job) = self.preview_job.take() else { return };
+        if self.editor.as_ref().is_none_or(|e| e.feature.id != job.feature) {
+            return;
+        }
+        match job.queued {
+            Some(mut req) => {
+                let data = req.data.take().unwrap_or_else(|| self.data.clone());
+                self.preview = Some(req.run(&data));
+            }
+            None => {
+                if let Ok(r) = job.rx.recv() {
+                    self.preview = Some(r);
+                }
+            }
+        }
+        self.preview_of = Some(job.feature);
     }
 
     pub fn editor_error(&self) -> Option<String> {
@@ -961,6 +1172,7 @@ impl App {
     }
 
     pub fn finish_feature(&mut self) {
+        self.settle_preview();
         if let Some(err) = self.editor_error() {
             let name = self.editor.as_ref().unwrap().feature.name.clone();
             self.say(format!("{} kann nicht abgeschlossen werden: {}", name, err), MsgKind::Error);
@@ -1050,6 +1262,7 @@ impl App {
         self.loop_declined.clear();
         self.context = None;
         self.preview = None;
+        self.preview_job = None;
         self.say("KE-Erzeugung abgebrochen.", MsgKind::Info);
     }
 

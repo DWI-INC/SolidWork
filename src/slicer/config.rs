@@ -368,6 +368,24 @@ impl Brim {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub enum SupportStyle {
+    /// straight grid columns under the whole overhang
+    Grid,
+    /// organic tree: thin tips under the overhang, branches that merge and avoid the part
+    Tree,
+}
+
+impl SupportStyle {
+    pub const ALL: [SupportStyle; 2] = [SupportStyle::Tree, SupportStyle::Grid];
+    pub fn name(&self) -> &'static str {
+        match self {
+            SupportStyle::Grid => "Normal (Gitter)",
+            SupportStyle::Tree => "Baum (organisch)",
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum Ironing {
     None,
     Top,
@@ -481,6 +499,14 @@ pub struct Process {
     pub interface_layers: u32,
     pub interface_spacing: f64,
     pub support_remove_small: bool,
+    pub support_style: SupportStyle,
+    /// overhangs held on two or more sides and no wider than `bridge_max` are bridged
+    pub support_smart_bridges: bool,
+    pub bridge_max: f64,
+    /// tree support: steepest branch lean from vertical (°), tip and trunk diameter (mm)
+    pub tree_angle: f64,
+    pub tree_tip_diameter: f64,
+    pub tree_trunk_diameter: f64,
     // ---- Haftung ----
     pub skirt_loops: u32,
     pub skirt_distance: f64,
@@ -576,6 +602,12 @@ impl Settings {
         }
         if !pos(q.support_spacing) || !pos(q.interface_spacing) {
             e.push("Stützenabstand muss größer als 0 sein.".into());
+        }
+        if q.support && q.support_style == SupportStyle::Tree && (!pos(q.tree_tip_diameter) || q.tree_trunk_diameter < q.tree_tip_diameter) {
+            e.push("Baumstützen: der Stamm muss mindestens so dick wie die Spitze sein.".into());
+        }
+        if !q.bridge_max.is_finite() || q.bridge_max < 0.0 {
+            e.push("Längste Brücke darf nicht negativ sein.".into());
         }
         if f.nozzle_temp > 500.0 || f.bed_temp > 200.0 {
             e.push("Temperatur unrealistisch hoch.".into());

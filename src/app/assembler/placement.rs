@@ -39,7 +39,7 @@ impl Guide {
 
     pub(super) fn instruction(&self) -> &'static str {
         match &self.method {
-            Method::Free => "Teil im Modell ziehen. Mit ⇧ und Ziehen drehen.",
+            Method::Free => "Pfeile verschieben entlang X/Y/Z, Ringe drehen um X/Y/Z, Teil ziehen verschiebt frei.",
             Method::Face(None) => "Am neuen Teil die flache Seite anklicken, die anliegen soll.",
             Method::Face(Some(_)) if self.attached => "Sitz prüfen. Zum Versetzen eine andere Stelle auf der Zielfläche anklicken.",
             Method::Face(Some(_)) => "Auf eine flache Stelle der Baugruppe klicken. Dort sitzt die Kontaktfläche des neuen Teils.",

@@ -138,6 +138,9 @@ fn main() -> eframe::Result<()> {
         Box::new(|cc| {
             style(&cc.egui_ctx);
             let mut app = App::new(cc.gl.as_deref());
+            // long feature previews run on a worker so the window keeps responding (demo
+            // screenshots stay deterministic without it)
+            app.async_preview = std::env::var_os("FREO_DEMO").is_none();
             if let Some(st) = cc.storage {
                 if let Some(d) = st.get_string("work_dir").filter(|s| !s.is_empty()).map(std::path::PathBuf::from).filter(|p| p.is_dir()) {
                     app.work_dir = d;

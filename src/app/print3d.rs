@@ -11,7 +11,8 @@ use crate::slicer::config::*;
 use crate::slicer::gcode::{self, Kind};
 use crate::slicer::mesh::{self as smesh, Mesh, Placement};
 use crate::slicer::plan::Role;
-use crate::slicer::{self, printers, Progress, Settings, Sliced};
+use crate::slicer::network::{self, Connection, HostKind};
+use crate::slicer::{self, printers, zoffset, Progress, Settings, Sliced};
 use eframe::egui::{self, pos2, vec2, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind};
 use glam::{DMat3, DVec3};
 use std::collections::HashSet;
@@ -77,6 +78,20 @@ pub struct Ready {
 
 type JobOut = Arc<Mutex<Option<Result<Ready, String>>>>;
 
+/// What a network job was for.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum NetWhat {
+    Test,
+    Send,
+    Gcode,
+}
+
+/// A network request to the printer running in the background.
+pub struct NetJob {
+    what: NetWhat,
+    out: Arc<Mutex<Option<Result<String, String>>>>,
+}
+
 pub struct Job {
     pub prog: Arc<Progress>,
     out: JobOut,
@@ -134,6 +149,15 @@ pub struct PrintUi {
     hover_part: bool,
     /// a slider is being dragged: 0 none, 1 low, 2 high, 3 move
     slider_drag: u8,
+    /// the printer on the network (upload, start, live commands)
+    pub net: Connection,
+    pub net_open: bool,
+    pub net_job: Option<NetJob>,
+    /// last answer of the printer, shown in the network dialog
+    pub net_status: Option<Result<String, String>>,
+    pub zoff_open: bool,
+    /// "Automatisch" was pressed: decide about support once the slice is back
+    auto_support: bool,
 }
 
 impl Default for PrintUi {
@@ -172,6 +196,12 @@ impl Default for PrintUi {
             counter: 1,
             hover_part: false,
             slider_drag: 0,
+            net: Connection::default(),
+            net_open: false,
+            net_job: None,
+            net_status: None,
+            zoff_open: false,
+            auto_support: false,
         }
     }
 }
@@ -181,12 +211,14 @@ struct Saved {
     settings: Settings,
     quality: usize,
     user_printers: Vec<Printer>,
+    #[serde(default)]
+    net: Connection,
 }
 
 impl PrintUi {
     /// Settings kept between sessions.
     pub fn to_json(&self) -> String {
-        serde_json::to_string(&Saved { settings: self.settings.clone(), quality: self.quality, user_printers: self.user_printers.clone() }).unwrap_or_default()
+        serde_json::to_string(&Saved { settings: self.settings.clone(), quality: self.quality, user_printers: self.user_printers.clone(), net: self.net.clone() }).unwrap_or_default()
     }
     pub fn load_json(&mut self, s: &str) {
         if let Ok(v) = serde_json::from_str::<Saved>(s) {
@@ -195,6 +227,7 @@ impl PrintUi {
             }
             self.quality = v.quality.min(5);
             self.user_printers = v.user_printers;
+            self.net = v.net;
         }
     }
     fn next_gen(&mut self) -> u64 {
@@ -618,6 +651,11 @@ impl App {
                     for w in &r.sliced.out.warnings {
                         self.say(format!("3D-Druck: {}", w), MsgKind::Warning);
                     }
+                    if let Some(m) = support_summary(&r) {
+                        self.say(format!("3D-Druck: {}", m), MsgKind::Info);
+                    }
+                    let auto = std::mem::take(&mut self.print.auto_support);
+                    let rep = r.sliced.plan.support.clone();
                     self.say(msg, MsgKind::Success);
                     self.print.layer_lo = 0;
                     self.print.layer_hi = usize::MAX;
@@ -627,8 +665,26 @@ impl App {
                     self.print.preview = true;
                     self.print.colors = None;
                     self.print.scene = None;
+                    if auto {
+                        if rep.needs_support() {
+                            self.say(
+                                format!(
+                                    "3D-Druck: Stützen automatisch – {} Baumspitze(n) unter {:.0} mm² Überhang{}.",
+                                    rep.tips,
+                                    rep.overhang_area,
+                                    if rep.bridges > 0 { format!(", {} Brücke(n) ohne Stützen", rep.bridges) } else { String::new() }
+                                ),
+                                MsgKind::Success,
+                            );
+                        } else {
+                            self.print.settings.process.support = false;
+                            self.say("3D-Druck: Stützen automatisch – das Teil braucht keine Stützen, sie bleiben aus.", MsgKind::Success);
+                            self.print_slice();
+                        }
+                    }
                 }
                 Err(e) => {
+                    self.print.auto_support = false;
                     self.say(format!("3D-Druck: {}", e.lines().next().unwrap_or("")), if e.contains("abgebrochen") { MsgKind::Info } else { MsgKind::Error });
                     self.print.error = Some(e);
                 }
@@ -637,6 +693,89 @@ impl App {
         if self.print.job.is_some() {
             ctx.request_repaint();
         }
+        let net = self.print.net_job.as_ref().and_then(|j| j.out.lock().ok().and_then(|mut g| g.take()).map(|r| (j.what, r)));
+        if let Some((what, res)) = net {
+            self.print.net_job = None;
+            match &res {
+                Ok(m) => self.say(format!("Drucker: {}", m), if what == NetWhat::Test { MsgKind::Info } else { MsgKind::Success }),
+                Err(e) => self.say(format!("Drucker: {}", e), MsgKind::Error),
+            }
+            self.print.net_status = Some(res);
+        }
+        if self.print.net_job.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+    }
+
+    /// Smart support: tree support with bridge detection and a threshold for the filament,
+    /// then slice; if the part turns out not to need support, it is switched off again.
+    fn print_auto_support(&mut self) {
+        let mat = self.print.settings.filament.material;
+        let q = &mut self.print.settings.process;
+        q.support = true;
+        q.support_style = SupportStyle::Tree;
+        q.support_smart_bridges = true;
+        q.support_build_plate_only = false;
+        // plastics that sag or curl get support a little earlier
+        q.support_threshold = match mat {
+            Material::Petg | Material::PetgCf | Material::Tpu | Material::Pa | Material::PaCf | Material::Pc => 35.0,
+            Material::Abs | Material::Asa | Material::Pp => 33.0,
+            _ => 30.0,
+        };
+        q.bridge_max = match mat {
+            Material::Tpu => 5.0,
+            Material::Petg | Material::PetgCf | Material::Abs | Material::Asa | Material::Pp => 8.0,
+            _ => 12.0,
+        };
+        self.print.auto_support = true;
+        self.print_slice();
+        if self.print.job.is_none() {
+            self.print.auto_support = false;
+        }
+    }
+
+    /// Runs a request to the network printer in the background.
+    fn print_net(&mut self, what: NetWhat, f: impl FnOnce(&Connection) -> Result<String, String> + Send + 'static) {
+        if self.print.net_job.is_some() {
+            self.say("Drucker: es läuft schon eine Übertragung.", MsgKind::Warning);
+            return;
+        }
+        let c = self.print.net.clone();
+        let out: Arc<Mutex<Option<Result<String, String>>>> = Arc::new(Mutex::new(None));
+        let o = out.clone();
+        std::thread::spawn(move || {
+            let r = f(&c);
+            if let Ok(mut g) = o.lock() {
+                *g = Some(r);
+            }
+        });
+        self.print.net_status = None;
+        self.print.net_job = Some(NetJob { what, out });
+    }
+
+    fn print_file_name(&self, s: &Settings) -> String {
+        format!("{}_{}_{}.gcode", self.data.name, s.filament.material.code().replace(' ', ""), s.printer.model.replace(' ', ""))
+    }
+
+    /// Sends the sliced G-code to the printer on the network.
+    pub fn print_send(&mut self) {
+        let Some(r) = self.print.ready.clone() else { return };
+        if !self.print_fresh() {
+            self.say("3D-Druck: Modell oder Einstellungen wurden geändert. Bitte erst neu slicen.", MsgKind::Warning);
+            return;
+        }
+        if self.print.net.host.trim().is_empty() {
+            self.print.net_open = true;
+            self.say("Drucker: zuerst die Netzwerkadresse des Druckers eintragen.", MsgKind::Info);
+            return;
+        }
+        if r.settings.printer.flavor == Flavor::Bambu {
+            self.say("Drucker: Bambu-Drucker brauchen verschlüsseltes FTPS/MQTT – bitte den G-Code exportieren und mit Bambu Studio/Handy-App senden.", MsgKind::Warning);
+            return;
+        }
+        let name = self.print_file_name(&r.settings);
+        self.say(format!("Drucker: sende „{}“ an {} …", network::safe_name(&name), self.print.net.host.trim()), MsgKind::Info);
+        self.print_net(NetWhat::Send, move |c| network::send(c, &name, r.sliced.out.gcode.as_bytes()));
     }
 
     fn print_set_printer(&mut self, p: Printer) {
@@ -855,6 +994,10 @@ impl App {
                 self.print.settings.process.support = on;
             }
             stack(ui, |ui| {
+                let mut tree = self.print.settings.process.support_style == SupportStyle::Tree;
+                if super::dlgkit::chk(ui, &mut tree, "Baumstützen", !busy && on) {
+                    self.print.settings.process.support_style = if tree { SupportStyle::Tree } else { SupportStyle::Grid };
+                }
                 let mut bp = self.print.settings.process.support_build_plate_only;
                 if super::dlgkit::chk(ui, &mut bp, "Nur auf dem Druckbett", !busy && on) {
                     self.print.settings.process.support_build_plate_only = bp;
@@ -864,9 +1007,21 @@ impl App {
                 if super::dlgkit::chk(ui, &mut b, "Rand (Brim)", !busy) {
                     self.print.settings.process.brim = if b { Brim::Outer } else { Brim::None };
                 }
+            });
+            stack(ui, |ui| {
+                let mut sb = self.print.settings.process.support_smart_bridges;
+                if super::dlgkit::chk(ui, &mut sb, "Brücken erkennen", !busy && on) {
+                    self.print.settings.process.support_smart_bridges = sb;
+                }
                 let mut sk = self.print.settings.process.skirt_loops > 0;
                 if super::dlgkit::chk(ui, &mut sk, "Schürze", !busy) {
                     self.print.settings.process.skirt_loops = if sk { 1 } else { 0 };
+                }
+                if small(ui, Icon::PrSupport, "Automatisch", !busy && has_part, false)
+                    .on_hover_text("Prüft beim Slicen die Überhänge: Stützen nur, wo das Teil sie wirklich braucht – kurze Brücken und flache Überhänge bleiben frei.")
+                    .clicked()
+                {
+                    self.print_auto_support();
                 }
             });
         });
@@ -919,9 +1074,22 @@ impl App {
             if large(ui, Icon::PrGcode, "G-Code\nexportieren", fresh && !busy, false).on_hover_text("Die G-Code-Datei für den Drucker speichern").clicked() {
                 self.print_export();
             }
+            let sending = self.print.net_job.as_ref().is_some_and(|j| j.what == NetWhat::Send);
+            if large(ui, Icon::PrPrinter, if sending { "Wird\ngesendet …" } else { "An Drucker\nsenden" }, fresh && !busy && !sending, false)
+                .on_hover_text("Den G-Code über das Netzwerk an den Drucker schicken (Klipper/Moonraker, OctoPrint, Duet) und den Druck starten")
+                .clicked()
+            {
+                self.print_send();
+            }
             stack(ui, |ui| {
                 if small(ui, Icon::PrStats, "Statistik", has_result, self.print.stats_open).clicked() {
                     self.print.stats_open = !self.print.stats_open;
+                }
+                if small(ui, Icon::Options, "Netzwerkdrucker", true, self.print.net_open).on_hover_text("Adresse und Zugang des Druckers im Netzwerk").clicked() {
+                    self.print.net_open = !self.print.net_open;
+                }
+                if small(ui, Icon::PrPlate, "Z-Offset", true, self.print.zoff_open).on_hover_text("Z-Offset-Assistent: Startwert, Befehle, Fehlerbilder und Testdruck für die erste Schicht").clicked() {
+                    self.print.zoff_open = !self.print.zoff_open;
                 }
             });
         });
@@ -942,7 +1110,7 @@ schließen", true, false).on_hover_text("Zurück zu Werkzeuge").clicked() {
             return;
         }
         let s = &r.settings;
-        let name = format!("{}_{}_{}.gcode", self.data.name, s.filament.material.code().replace(' ', ""), s.printer.model.replace(' ', ""));
+        let name = self.print_file_name(s);
         let Some(path) = rfd::FileDialog::new().set_title("G-Code exportieren").set_directory(self.work_dir()).set_file_name(&name).add_filter("G-Code", &["gcode"]).save_file() else { return };
         match std::fs::write(&path, r.sliced.out.gcode.as_bytes()) {
             Ok(()) => self.say(format!("G-Code gespeichert: {}", path.display()), MsgKind::Success),
@@ -1175,6 +1343,22 @@ schließen", true, false).on_hover_text("Zurück zu Werkzeuge").clicked() {
                 int(ui, "Schnittstellen-Schichten", &mut q.interface_layers, 0, 10, "");
                 num(ui, "Schnittstellen-Abstand", &mut q.interface_spacing, 0.1, 5.0, "mm", 2);
                 flag(ui, "Kleine Überhänge weglassen", &mut q.support_remove_small);
+                pick(ui, "pr_sstyle", "Art", &mut q.support_style, &SupportStyle::ALL, |x| x.name());
+                section(ui, "Intelligente Stützen");
+                flag(ui, "Brücken ohne Stützen drucken", &mut q.support_smart_bridges);
+                num(ui, "Längste Brücke", &mut q.bridge_max, 0.0, 100.0, "mm", 1);
+                if q.support_style == SupportStyle::Tree {
+                    section(ui, "Baumstützen");
+                    num(ui, "Astneigung", &mut q.tree_angle, 5.0, 75.0, "°", 0);
+                    num(ui, "Spitzendurchmesser", &mut q.tree_tip_diameter, 0.4, 5.0, "mm", 2);
+                    num(ui, "Stammdurchmesser", &mut q.tree_trunk_diameter, 1.0, 30.0, "mm", 1);
+                }
+                if let Some(r) = self.print.ready.as_ref() {
+                    if let Some(m) = support_summary(r) {
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new(m).size(12.0).color(DIM_TEXT));
+                    }
+                }
             }
             4 => {
                 section(ui, "Schürze");
@@ -1823,6 +2007,12 @@ schließen", true, false).on_hover_text("Zurück zu Werkzeuge").clicked() {
         if self.print.stats_open {
             self.print_stats_window(ctx);
         }
+        if self.print.net_open {
+            self.print_net_window(ctx);
+        }
+        if self.print.zoff_open {
+            self.print_zoff_window(ctx);
+        }
     }
 
     fn print_stats_window(&mut self, ctx: &egui::Context) {
@@ -2029,6 +2219,235 @@ schließen", true, false).on_hover_text("Zurück zu Werkzeuge").clicked() {
             self.print.printer_dlg = Some(d);
         }
     }
+
+    // ------------------------------------------------------------------ network printer
+
+    fn print_net_window(&mut self, ctx: &egui::Context) {
+        let mut c = self.print.net.clone();
+        let busy = self.print.net_job.is_some();
+        let mut test = false;
+        let mut send = false;
+        let fresh = self.print_fresh();
+        let bambu = self.print.settings.printer.flavor == Flavor::Bambu;
+        let status = self.print.net_status.clone();
+        let open = super::dlgkit::cwin(ctx, "pr_net", "Netzwerkdrucker", false, pos2(460.0, 160.0), 470.0, |ui| {
+            super::dlgkit::pad(ui, 10.0, |ui| {
+                ui.spacing_mut().item_spacing = vec2(6.0, 5.0);
+                let names: Vec<&str> = HostKind::ALL.iter().map(|k| k.name()).collect();
+                let mut k = HostKind::ALL.iter().position(|x| *x == c.kind).unwrap_or(0);
+                super::dlgkit::lbl(ui, "Art des Druckers");
+                if super::dlgkit::combo(ui, "pr_net_kind", 440.0, &mut k, &names, !busy, Some(Icon::PrPrinter)) {
+                    c.kind = HostKind::ALL[k];
+                }
+                super::dlgkit::lbl(ui, "Adresse (IP oder Name, optional mit :Port)");
+                super::dlgkit::field(ui, &mut c.host, 440.0, !busy);
+                ui.label(
+                    egui::RichText::new(match c.kind {
+                        HostKind::Moonraker => "z. B. 192.168.1.50 (Mainsail/Fluidd) oder 192.168.1.50:7125 (Moonraker direkt)",
+                        HostKind::OctoPrint => "z. B. octopi.local oder 192.168.1.20/octoprint",
+                        HostKind::Duet => "z. B. duet3.local",
+                    })
+                    .size(11.5)
+                    .color(DIM_TEXT),
+                );
+                super::dlgkit::lbl(ui, c.kind.key_label());
+                ui.add_enabled(!busy, egui::TextEdit::singleline(&mut c.key).password(true).desired_width(440.0));
+                super::dlgkit::chk(ui, &mut c.start, "Druck nach dem Hochladen sofort starten", !busy);
+                if bambu {
+                    ui.label(
+                        egui::RichText::new("Bambu-Drucker sprechen nur verschlüsseltes FTPS/MQTT und werden hier nicht unterstützt – G-Code exportieren und mit Bambu Studio senden.")
+                            .size(12.0)
+                            .color(Color32::from_rgb(200, 120, 0)),
+                    );
+                }
+                super::dlgkit::hline(ui);
+                ui.horizontal(|ui| {
+                    if super::dlgkit::btn(ui, "Verbindung testen", 150.0, if busy || c.host.trim().is_empty() { 2 } else { 0 }) && !busy {
+                        test = true;
+                    }
+                    let ok = fresh && !busy && !bambu && !c.host.trim().is_empty();
+                    if super::dlgkit::btn(ui, if c.start { "Senden und drucken" } else { "Nur hochladen" }, 170.0, if ok { 1 } else { 2 }) && ok {
+                        send = true;
+                    }
+                    if busy {
+                        ui.spinner();
+                    }
+                });
+                if !fresh {
+                    ui.label(egui::RichText::new("Zum Senden zuerst slicen.").size(12.0).color(DIM_TEXT));
+                }
+                if let Some(st) = &status {
+                    let (t, col) = match st {
+                        Ok(m) => (m.as_str(), Color32::from_rgb(30, 140, 60)),
+                        Err(e) => (e.as_str(), Color32::from_rgb(200, 40, 30)),
+                    };
+                    ui.label(egui::RichText::new(t).size(12.5).color(col));
+                }
+                ui.label(egui::RichText::new("Der Schlüssel wird nur lokal in den SolidWork-Einstellungen gespeichert.").size(11.0).color(DIM_TEXT));
+            });
+        });
+        if c != self.print.net {
+            self.print.net = c;
+            self.print.net_status = None;
+        }
+        if test {
+            self.print_net(NetWhat::Test, network::test);
+        }
+        if send {
+            self.print_send();
+        }
+        if !open {
+            self.print.net_open = false;
+        }
+    }
+
+    // ------------------------------------------------------------------ Z offset assistant
+
+    fn print_zoff_window(&mut self, ctx: &egui::Context) {
+        let s = self.print.settings.clone();
+        let ready = self.print.ready.clone().filter(|_| self.print_fresh());
+        let a = zoffset::advise(&s, ready.as_ref().map(|r| &r.sliced.plan));
+        let flavor = s.printer.flavor;
+        let net_ok = !self.print.net.host.trim().is_empty() && flavor != Flavor::Bambu;
+        let busy = self.print.net_job.is_some();
+        let mut live: Option<String> = None;
+        let mut test_save = false;
+        let mut test_send = false;
+        let offs = zoffset::test_offsets(a.adjust);
+        let open = super::dlgkit::cwin(ctx, "pr_zoff", "Z-Offset-Assistent", false, pos2(380.0, 120.0), 560.0, |ui| {
+            super::dlgkit::pad(ui, 10.0, |ui| {
+                egui::ScrollArea::vertical().max_height(620.0).show(ui, |ui| {
+                    ui.spacing_mut().item_spacing = vec2(6.0, 4.0);
+                    let head = |ui: &mut egui::Ui, t: &str| {
+                        ui.add_space(6.0);
+                        ui.label(egui::RichText::new(t).size(13.5).strong().color(LABEL));
+                    };
+                    let dim = |ui: &mut egui::Ui, t: &str| {
+                        ui.label(egui::RichText::new(t).size(12.5).color(TEXT));
+                    };
+                    ui.label(egui::RichText::new(format!("{} · {} · {}", s.printer.name(), s.filament.name, s.printer.plate.name())).size(12.0).color(DIM_TEXT));
+                    head(ui, "Empfehlung");
+                    ui.label(
+                        egui::RichText::new(if a.adjust.abs() < 1e-9 {
+                            "Startwert: Offset wie für PLA lassen (±0,00 mm).".to_string()
+                        } else {
+                            format!("Startwert: {:+.2} mm gegenüber dem für PLA eingestellten Offset ({}).", a.adjust, if a.adjust < 0.0 { "Düse näher ans Bett" } else { "Düse weiter weg" })
+                        })
+                        .size(13.0)
+                        .color(TEXT),
+                    );
+                    for r in &a.reasons {
+                        dim(ui, &format!("• {}", r));
+                    }
+                    ui.label(egui::RichText::new(format!("Anpressung der ersten Schicht: {:.1} : 1 (Breite ÷ Höhe, gut sind 2–2,5).", a.squish)).size(12.0).color(DIM_TEXT));
+                    if flavor != Flavor::Bambu {
+                        head(ui, "Während der ersten Schicht nachstellen");
+                        ui.label(egui::RichText::new("Negativ = Düse näher ans Bett, positiv = weiter weg.").size(12.0).color(DIM_TEXT));
+                        ui.horizontal_wrapped(|ui| {
+                            for d in [-0.05, -0.02, -0.01, 0.01, 0.02, 0.05] {
+                                let cmd = zoffset::live_command(flavor, d);
+                                let kind = if net_ok && !busy { 0 } else { 2 };
+                                let hit = super::dlgkit::btn(ui, &format!("{:+.2}", d), 64.0, kind);
+                                if hit && kind == 0 {
+                                    live = Some(cmd);
+                                }
+                            }
+                        });
+                        ui.label(egui::RichText::new(format!("Befehl: {}", zoffset::live_command(flavor, -0.02))).monospace().size(12.0).color(TEXT));
+                        if !net_ok {
+                            ui.label(egui::RichText::new("Die Knöpfe senden den Befehl direkt an den Drucker – dazu unter „Netzwerkdrucker“ die Adresse eintragen.").size(11.5).color(DIM_TEXT));
+                        }
+                    }
+                    head(ui, "Woran man die erste Schicht erkennt");
+                    egui::Grid::new("pr_zoff_sym").striped(true).num_columns(2).spacing(vec2(12.0, 4.0)).show(ui, |ui| {
+                        for (sym, fix, dir) in zoffset::SYMPTOMS {
+                            ui.label(egui::RichText::new(sym).size(12.5));
+                            let col = match dir {
+                                0 => Color32::from_rgb(30, 140, 60),
+                                -1 => Color32::from_rgb(40, 100, 200),
+                                _ => Color32::from_rgb(200, 110, 0),
+                            };
+                            ui.label(egui::RichText::new(fix).size(12.5).color(col));
+                            ui.end_row();
+                        }
+                    });
+                    head(ui, "Testdruck");
+                    dim(
+                        ui,
+                        &format!(
+                            "{} Felder in einer Reihe, von links nach rechts mit {} (das linke hat vorne eine Lasche). Das glatteste Feld wählen und dessen Wert übernehmen.",
+                            offs.len(),
+                            offs.iter().map(|d| format!("{:+.2}", d)).collect::<Vec<_>>().join(" / ")
+                        ),
+                    );
+                    ui.horizontal(|ui| {
+                        if super::dlgkit::btn(ui, "Testdruck speichern …", 170.0, 0) {
+                            test_save = true;
+                        }
+                        let k = if net_ok && !busy { 1 } else { 2 };
+                        if super::dlgkit::btn(ui, "Testdruck an Drucker senden", 210.0, k) && k == 1 {
+                            test_send = true;
+                        }
+                    });
+                    head(ui, "Grundeinstellung finden");
+                    for (i, l) in a.calibrate.iter().enumerate() {
+                        dim(ui, &format!("{}. {}", i + 1, l));
+                    }
+                    head(ui, "Dauerhaft speichern");
+                    for l in &a.save {
+                        dim(ui, &format!("• {}", l));
+                    }
+                    if !a.tips.is_empty() {
+                        head(ui, "Hinweise");
+                        for t in &a.tips {
+                            dim(ui, &format!("• {}", t));
+                        }
+                    }
+                });
+            });
+        });
+        if let Some(cmd) = live {
+            self.print_net(NetWhat::Gcode, move |c| network::run_gcode(c, &cmd));
+        }
+        if test_save || test_send {
+            let (_, g) = zoffset::test_print(&s, &offs);
+            let name = format!("Z-Offset-Test_{}_{}.gcode", s.filament.material.code().replace(' ', ""), s.printer.model.replace(' ', ""));
+            if test_save {
+                if let Some(path) = rfd::FileDialog::new().set_title("Z-Offset-Testdruck speichern").set_directory(self.work_dir()).set_file_name(&name).add_filter("G-Code", &["gcode"]).save_file() {
+                    match std::fs::write(&path, g.as_bytes()) {
+                        Ok(()) => self.say(format!("Z-Offset-Testdruck gespeichert: {}", path.display()), MsgKind::Success),
+                        Err(e) => self.say(format!("Testdruck konnte nicht gespeichert werden: {}", e), MsgKind::Error),
+                    }
+                }
+            } else {
+                self.say("Drucker: sende den Z-Offset-Testdruck …", MsgKind::Info);
+                self.print_net(NetWhat::Send, move |c| network::send(c, &name, g.as_bytes()));
+            }
+        }
+        if !open {
+            self.print.zoff_open = false;
+        }
+    }
+}
+
+/// One line about what the support analysis found, for the status bar and the panel.
+fn support_summary(r: &Ready) -> Option<String> {
+    let rep = &r.sliced.plan.support;
+    let q = &r.settings.process;
+    let mut parts = vec![];
+    if q.support && rep.tips > 0 {
+        parts.push(format!("{} Baumspitzen, zu {} Stämmen zusammengeführt", rep.tips, rep.on_bed + rep.on_part));
+        if rep.on_part > 0 {
+            parts.push(format!("{} davon stehen auf dem Teil", rep.on_part));
+        }
+    }
+    if rep.bridges > 0 && q.support_smart_bridges {
+        parts.push(format!("{} Brücke(n) bis {:.0} mm ohne Stützen", rep.bridges, q.bridge_max));
+    }
+    if q.support && !rep.needs_support() {
+        parts.push("das Teil braucht eigentlich keine Stützen".into());
+    }
+    (!parts.is_empty()).then(|| format!("Stützen: {}.", parts.join(", ")))
 }
 
 fn short(s: &str, n: usize) -> String {

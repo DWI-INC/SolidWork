@@ -103,6 +103,101 @@ pub struct Topology {
     pub chains: Vec<EdgeChain>,
     pub draw_edges: Vec<(usize, usize)>,
     pub bbox: BBox,
+    /// bounding boxes over runs of polygons for ray casts (picking, hole visibility, thickness),
+    /// built on first use: a ray only tests the triangles in boxes it passes through
+    pub ray_accel: std::sync::OnceLock<RayAccel>,
+}
+
+/// Two-level box hierarchy over consecutive polygons (tessellation keeps neighbours together).
+#[derive(Default)]
+pub struct RayAccel {
+    /// boxes of `LEAF` polygons each: (box, first poly, end)
+    leaves: Vec<(BBox, u32, u32)>,
+    /// boxes of `GROUP` leaves each: (box, first leaf, end)
+    groups: Vec<(BBox, u32, u32)>,
+}
+
+const LEAF: usize = 16;
+const GROUP: usize = 16;
+
+/// Whether the ray `o + t d` (`inv` = 1/d per axis) meets the box for some t in [t0, t1].
+#[inline]
+fn ray_box(b: &BBox, o: V3, d: V3, inv: V3, t0: f64, t1: f64) -> bool {
+    let (mut lo, mut hi) = (t0, t1);
+    for k in 0..3 {
+        let (oo, dd, ii, mn, mx) = (o[k], d[k], inv[k], b.min[k], b.max[k]);
+        if dd == 0.0 {
+            if oo < mn || oo > mx {
+                return false;
+            }
+            continue;
+        }
+        let (mut a, mut c) = ((mn - oo) * ii, (mx - oo) * ii);
+        if a > c {
+            std::mem::swap(&mut a, &mut c);
+        }
+        lo = lo.max(a);
+        hi = hi.min(c);
+        if lo > hi {
+            return false;
+        }
+    }
+    true
+}
+
+impl RayAccel {
+    fn build(t: &Topology) -> RayAccel {
+        // padded so that triangles touched exactly at their border are never skipped
+        let pad = t.bbox.diagonal().max(1.0) * 1e-7;
+        let mut leaves = Vec::with_capacity(t.polys.len() / LEAF + 1);
+        let mut start = 0;
+        while start < t.polys.len() {
+            let end = (start + LEAF).min(t.polys.len());
+            let mut b = BBox::default();
+            for p in &t.polys[start..end] {
+                for &v in p {
+                    b.add(t.positions[v]);
+                }
+            }
+            if !b.is_empty() {
+                b.min -= V3::splat(pad);
+                b.max += V3::splat(pad);
+            }
+            leaves.push((b, start as u32, end as u32));
+            start = end;
+        }
+        let groups = leaves
+            .chunks(GROUP)
+            .enumerate()
+            .map(|(i, c)| {
+                let mut b = BBox::default();
+                for l in c {
+                    b.add_box(&l.0);
+                }
+                (b, (i * GROUP) as u32, (i * GROUP + c.len()) as u32)
+            })
+            .collect();
+        RayAccel { leaves, groups }
+    }
+
+    /// Calls `f(poly)` for every polygon whose box the ray meets with t in [t0, max_t()],
+    /// re-reading the limit after every call so a closer hit prunes the rest.
+    pub fn visit(&self, o: V3, d: V3, t0: f64, mut max_t: impl FnMut() -> f64, mut f: impl FnMut(usize)) {
+        let inv = V3::new(1.0 / d.x, 1.0 / d.y, 1.0 / d.z);
+        for g in &self.groups {
+            if g.0.is_empty() || !ray_box(&g.0, o, d, inv, t0, max_t()) {
+                continue;
+            }
+            for l in &self.leaves[g.1 as usize..g.2 as usize] {
+                if l.0.is_empty() || !ray_box(&l.0, o, d, inv, t0, max_t()) {
+                    continue;
+                }
+                for pi in l.1..l.2 {
+                    f(pi as usize);
+                }
+            }
+        }
+    }
 }
 
 type Key = (i64, i64, i64);
@@ -895,8 +990,9 @@ impl Topology {
 
     /// Distance to the first triangle hit by the ray `o + t d` with `t > min_t`.
     pub fn ray_first_hit(&self, o: V3, d: V3, min_t: f64) -> Option<f64> {
-        let mut best: Option<f64> = None;
-        for p in &self.polys {
+        let best = std::cell::Cell::new(None::<f64>);
+        self.ray_accel().visit(o, d, min_t.min(0.0), || best.get().unwrap_or(f64::INFINITY), |pi| {
+            let p = &self.polys[pi];
             for k in 1..p.len() - 1 {
                 let (a, b, c) = (self.positions[p[0]], self.positions[p[k]], self.positions[p[k + 1]]);
                 let (e1, e2) = (b - a, c - a);
@@ -917,12 +1013,17 @@ impl Topology {
                     continue;
                 }
                 let t = e2.dot(q) * inv;
-                if t > min_t && best.map_or(true, |b| t < b) {
-                    best = Some(t);
+                if t > min_t && best.get().map_or(true, |b| t < b) {
+                    best.set(Some(t));
                 }
             }
-        }
-        best
+        });
+        best.get()
+    }
+
+    /// The ray-cast box hierarchy (built once per topology).
+    pub fn ray_accel(&self) -> &RayAccel {
+        self.ray_accel.get_or_init(|| RayAccel::build(self))
     }
 
     /// Whether `q` lies inside the solid: the first surface a ray from it meets faces away.

@@ -55,6 +55,8 @@ pub struct AsmSession {
     pub show_bom: bool,
     pub interference: Option<Vec<(u64, u64, f64)>>,
     pub assembler: super::assembler::Assembler,
+    /// lit LEDs of the circuit simulation: surface tag → colour (channels above 2 are drawn unshaded)
+    pub glow: std::collections::HashMap<u32, [f32; 3]>,
     // Part definition temporarily visible to the placement solver, committed with its instance.
     staged_part: Option<String>,
 }
@@ -75,6 +77,7 @@ impl AsmSession {
             show_bom: false,
             interference: None,
             assembler: Default::default(),
+            glow: Default::default(),
             staged_part: None,
         }
     }
@@ -110,6 +113,34 @@ fn ctype_icon(t: AsmCType) -> Icon {
         AsmCType::Normal => Icon::AsmNormal,
         AsmCType::Default => Icon::AsmDefault,
         AsmCType::Fix => Icon::AsmFix,
+    }
+}
+
+/// A copy of the assembly for drawing the model tree: imported faces are left out.
+fn tree_copy(d: &AssemblyData) -> AssemblyData {
+    let light = |m: &ModelData| ModelData {
+        name: m.name.clone(),
+        features: m
+            .features
+            .iter()
+            .map(|f| match &f.kind {
+                FeatureKind::Import(i) => Feature {
+                    kind: FeatureKind::Import(crate::model::features::ImportDef { source: i.source.clone(), format: i.format.clone(), faces: vec![] }),
+                    name: f.name.clone(),
+                    ..*f
+                },
+                _ => f.clone(),
+            })
+            .collect(),
+        ..ModelData::new_part(&m.name)
+    };
+    AssemblyData {
+        name: d.name.clone(),
+        skeleton: light(&d.skeleton),
+        parts: d.parts.iter().map(|p| am::PartEntry { data: light(&p.data), source: p.source.clone(), board: p.board.clone(), device: p.device.clone(), modified: p.modified }).collect(),
+        components: d.components.clone(),
+        next_id: d.next_id,
+        wiring: d.wiring.clone(),
     }
 }
 
@@ -181,6 +212,22 @@ impl App {
         a.assembler.bench = None;
         let factor = if a.exploded && a.place.is_none() { a.explode } else { 0.0 };
         a.res = am::regen(&a.data, &mut a.cache, &am::RegenOpts { explode: factor, editing: None });
+        // The solved placement becomes the stored one (as in Creo): a component whose parent is
+        // later deleted or suppressed stays where it is instead of jumping back to where it was
+        // first assembled, and the next solve starts from where it is shown.
+        for c in &mut a.data.components {
+            if let (Some(pl), Some(st)) = (a.res.placements.get(&c.id), a.res.status.get(&c.id)) {
+                if !matches!(st, PlaceStatus::Invalid(_)) {
+                    c.placement = *pl;
+                    // a pending Flip (sign 2) is relative to the old placement: settle it now
+                    for (k, s) in c.constraints.iter_mut().zip(a.res.signs.get(&c.id).into_iter().flatten()) {
+                        if k.sign == 2.0 && k.complete() && k.ty.needs_refs() {
+                            k.sign = *s;
+                        }
+                    }
+                }
+            }
+        }
         self.data = a.data.skeleton.clone();
         self.result = a.res.display.clone();
         let msgs = a.res.messages.clone();
@@ -223,6 +270,7 @@ impl App {
 
     pub fn asm_undo(&mut self, redo: bool) {
         if self.busy() {
+            self.say("Rückgängig ist erst nach Abschluss oder Abbruch der Komponentenplatzierung möglich.", MsgKind::Warning);
             return;
         }
         let Some(a) = &mut self.asm else { return };
@@ -349,7 +397,12 @@ impl App {
         }
     }
 
-    pub(super) fn stage_part(&mut self, mut data: ModelData, mut source: Option<PathBuf>, board: Option<Arc<crate::pcb::Board>>) {
+    pub(super) fn stage_part(&mut self, data: ModelData, source: Option<PathBuf>, board: Option<Arc<crate::pcb::Board>>) {
+        self.stage_device_part(data, source, board, None);
+    }
+
+    /// Like `stage_part`, for a library part that carries its pins and lamps.
+    pub(super) fn stage_device_part(&mut self, mut data: ModelData, mut source: Option<PathBuf>, board: Option<Arc<crate::pcb::Board>>, device: Option<crate::pcb::devices::Device>) {
         if !self.in_asm() || self.placing() {
             return;
         }
@@ -357,7 +410,7 @@ impl App {
         let base = data.name.clone();
         for n in 1.. {
             let Some(part) = a.data.part(&data.name) else { break };
-            if part.source == source && part.data == data && part.board == board {
+            if part.source == source && part.data == data && part.board == board && part.device == device {
                 self.assemble_part(&data.name);
                 return;
             }
@@ -366,7 +419,9 @@ impl App {
             data.name = format!("{base} ({})", n + 1);
         }
         let name = a.data.add_part(data, source);
-        a.data.part_mut(&name).unwrap().board = board;
+        let entry = a.data.part_mut(&name).unwrap();
+        entry.board = board;
+        entry.device = device;
         a.staged_part = Some(name.clone());
         self.assemble_part(&name);
     }
@@ -493,22 +548,37 @@ impl App {
 
     /// Re-solves the component being placed and refreshes the preview display.
     pub fn place_update(&mut self) {
+        self.place_resolve(false);
+    }
+
+    /// After a drag that only moved the component being placed: re-solves just that component
+    /// and moves its geometry in the preview in place when nothing else can change (see
+    /// `am::regen_moved`), otherwise regenerates the whole preview.
+    pub fn place_update_moved(&mut self) {
+        self.place_resolve(true);
+    }
+
+    fn place_resolve(&mut self, moved: bool) {
         let Some(a) = &mut self.asm else { return };
         let Some(ed) = &mut a.place else { return };
-        let res = am::regen(&a.data, &mut a.cache, &am::RegenOpts { explode: 0.0, editing: Some(&ed.comp) });
+        let fast = moved && a.preview.as_mut().is_some_and(|prev| am::regen_moved(&a.data, &mut a.cache, &ed.comp, prev));
+        if !fast {
+            a.preview = Some(am::regen(&a.data, &mut a.cache, &am::RegenOpts { explode: 0.0, editing: Some(&ed.comp) }));
+        }
+        let res = a.preview.as_ref().unwrap();
         if let Some(pl) = res.placements.get(&ed.comp.id) {
             ed.comp.placement = *pl;
         }
         ed.status = res.status.get(&ed.comp.id).cloned().unwrap_or(PlaceStatus::Packaged);
-        // keep the orientation chosen on the first solve so Flip is relative to it
-        let comps: Vec<Component> = a.data.components.iter().filter(|c| c.id != ed.comp.id).cloned().chain(std::iter::once(ed.comp.clone())).collect();
-        let (_, _, signs) = am::place_component(&ed.comp, &comps, &res.parts, &res.skeleton, &res.placements);
+        // Keep the orientation the solve just used so Flip is relative to it. These signs were
+        // decided from the placement before the solve; deciding them again from the solved
+        // placement would undo a Flip of a free axis on the next update.
+        let signs = res.signs.get(&ed.comp.id).cloned().unwrap_or_default();
         for (c, s) in ed.comp.constraints.iter_mut().zip(signs) {
             if (c.sign == 0.0 || c.sign == 2.0) && c.complete() && c.ty.needs_refs() {
                 c.sign = s;
             }
         }
-        a.preview = Some(res);
         self.preview = None;
     }
 
@@ -635,7 +705,10 @@ impl App {
                 return;
             }
         }
-        if ed.active >= ed.comp.constraints.len() || !ed.comp.constraints[ed.active].ty.needs_refs() {
+        // A finished constraint is only re-picked through its collector (or to repair an invalid
+        // set); otherwise a new pick starts the next constraint, as in Creo.
+        let finished = ed.comp.constraints.get(ed.active).is_some_and(|c| c.complete()) && ed.side.is_none() && !matches!(ed.status, PlaceStatus::Invalid(_));
+        if finished || ed.active >= ed.comp.constraints.len() || !ed.comp.constraints[ed.active].ty.needs_refs() {
             ed.comp.constraints.push(AsmConstraint::new(AsmCType::Automatic));
             ed.active = ed.comp.constraints.len() - 1;
         }
@@ -690,7 +763,7 @@ impl App {
         } else {
             pl.moved(right * (dx as f64 * wpp) - up * (dy as f64 * wpp))
         };
-        self.place_update();
+        self.place_update_moved();
     }
 
     pub fn place_finish(&mut self) {
@@ -932,7 +1005,9 @@ impl App {
         let q = self.creo.tree_filter.trim().to_lowercase();
         ui.add_space(2.0);
         let Some(a) = &self.asm else { return };
-        let data = a.data.clone();
+        // what the tree shows of the parts, without the imported geometry (a full copy of every
+        // part every frame was slow for STEP assemblies)
+        let data = tree_copy(&a.data);
         let status = self.asm_view().map(|v| v.status.clone()).unwrap_or_default();
         let parts = self.asm_view().map(|v| v.parts.clone()).unwrap_or_default();
         let placing = a.place.as_ref().map(|e| (e.comp.id, e.is_new, e.comp.part.clone()));
@@ -1371,7 +1446,7 @@ impl App {
                     {
                         e.comp.assumptions = !e.comp.assumptions;
                     }
-                    ui.label(RichText::new("Komponente ziehen zum Verschieben,\n⇧ ziehen zum Drehen").size(10.5).color(LABEL));
+                    ui.label(RichText::new("Pfeile: entlang X/Y/Z verschieben, Ringe: um X/Y/Z drehen,\nMitte oder Teil ziehen: frei verschieben, ⇧ ziehen: drehen").size(10.5).color(LABEL));
                 });
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {

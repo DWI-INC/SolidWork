@@ -413,7 +413,7 @@ impl App {
         self.sim_reset_view();
     }
 
-    fn sim_reset_view(&mut self) {
+    pub(in crate::app) fn sim_reset_view(&mut self) {
         if let Some(j) = self.sim.job.take() {
             j.shared.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
         }
@@ -707,7 +707,7 @@ impl App {
             edges.extend_from_slice(&p);
         }
         self.sim.counter += 1;
-        let b = Arc::new(ModelBuffers { generation: (1u64 << 62) + self.sim.counter, solid, edges });
+        let b = Arc::new(ModelBuffers { generation: (1u64 << 62) + self.sim.counter, solid, edges, ..Default::default() });
         self.sim.buffers = Some((key, b.clone()));
         Some((b, if out.see_through { 0.35 } else { 1.0 }))
     }
@@ -2033,6 +2033,18 @@ impl App {
     }
 
     /// FREO_DEMO=sim:<kind>: a solved study on the bracket (screenshots).
+    /// Solves the active study on this thread (demo scenes and tests).
+    pub fn sim_solve_blocking(&mut self) {
+        let Some(study) = self.sim_study().cloned() else { return };
+        match run::run_blocking(&SimInput { topo: self.result.topo.clone(), study, fidelity: self.sim.fidelity }) {
+            Ok(o) => {
+                let key = self.sim_key().unwrap_or(1);
+                self.sim_take(o, key);
+            }
+            Err(e) => self.say(e, MsgKind::Error),
+        }
+    }
+
     pub fn demo_sim(&mut self, which: &str) {
         let topo = self.result.topo.clone();
         let face = |n: V3| {

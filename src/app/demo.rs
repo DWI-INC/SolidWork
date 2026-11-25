@@ -61,6 +61,42 @@ pub fn bracket() -> ModelData {
     m
 }
 
+/// The bracket with a 10 × 6 pattern of small counterbored holes (about 116 000 polygons):
+/// a heavy part for profiling (FREO_DEMO=heavy, heavyasm).
+pub fn heavy_part() -> ModelData {
+    let mut m = bracket();
+    for f in &mut m.features {
+        match &mut f.kind {
+            FeatureKind::Pattern(p) => {
+                p.count1 = Dim::v(10.0);
+                p.spacing1 = Dim::v(10.0);
+                p.count2 = Dim::v(6.0);
+                p.spacing2 = Dim::v(-10.0);
+            }
+            FeatureKind::Hole(h) if f.id == 12 => {
+                h.diameter = Dim::v(4.0);
+                h.cb_diameter = Dim::v(7.0);
+            }
+            _ => {}
+        }
+    }
+    m
+}
+
+/// The sample assembly with the heavy part added beside it (fixed).
+pub fn heavy_assembly() -> crate::model::assembly::AssemblyData {
+    use crate::model::assembly::*;
+    let mut data = sample_assembly();
+    let mut heavy = heavy_part();
+    heavy.name = "HEAVY".into();
+    data.add_part(heavy, None);
+    let mut c = Component::new(110, "HEAVY", Placement::translation(V3::new(0.0, 0.0, 150.0)));
+    c.constraints.push(AsmConstraint::new(AsmCType::Fix));
+    data.components.push(c);
+    data.next_id = 111;
+    data
+}
+
 fn extrude_on(plane: u64, sk: Sketch, depth: f64, remove: bool, symmetric: bool, flip: bool) -> FeatureKind {
     let FeatureKind::Extrude(mut e) = FeatureKind::new_extrude() else { unreachable!() };
     e.plane = Some(PlaneRef::Datum(plane));
@@ -293,6 +329,8 @@ impl App {
             self.print_open();
             self.fit_pending = true;
             self.print.settings.process.support = which.contains("support");
+            self.print.zoff_open = which.contains("zoff");
+            self.print.net_open = which.contains("net");
             if which.contains("prepare") {
                 return;
             }
@@ -998,6 +1036,72 @@ impl App {
                 self.regenerate(false);
                 self.new_dialog = Some(super::assembly::NewDialog { idea: false, assembly: true, drawing: false, name: "asm0001".into(), common: String::new(), template: true, focus: true });
             }
+            _ if scene.starts_with("libpart:") => {
+                let i: usize = scene[8..].parse().unwrap_or(0);
+                let item = crate::model::library::catalog().get(i).copied().unwrap_or(crate::model::library::Item::Screw);
+                match item.build() {
+                    Ok(lp) => {
+                        self.data = lp.data;
+                        self.regenerate(false);
+                        self.camera.rot = if std::env::var_os("FREO_TOPVIEW").is_some() { super::camera::StdView::Top.rotation() } else { super::camera::StdView::Standard.rotation() };
+                        self.fit_pending = true;
+                    }
+                    Err(e) => self.say(e, MsgKind::Error),
+                }
+            }
+            "product" | "product:library" | "product:circuit" | "product:inside" | "product:wire" | "product:strength" => {
+                let data = crate::model::library::demo_product();
+                self.data = data.skeleton.clone();
+                self.asm = Some(super::assembly::AsmSession::new(data));
+                self.asm_regenerate(false);
+                self.asm.as_mut().unwrap().assembler.active = true;
+                self.tab = Tab::Tools;
+                self.camera.rot = super::camera::StdView::Standard.rotation();
+                self.fit_pending = true;
+                match scene {
+                    "product:library" => {
+                        self.open_library();
+                        if let Some(l) = self.asm.as_mut().and_then(|a| a.assembler.library.as_mut()) {
+                            l.cat = std::env::var("FREO_LIB_CAT").ok().and_then(|c| crate::model::library::Category::ALL.into_iter().find(|x| x.label() == c)).unwrap_or(l.cat);
+                        }
+                    }
+                    "product:circuit" | "product:wire" | "product:inside" => {
+                        self.open_circuit();
+                        let button = self.asm.as_ref().unwrap().data.components[5].id;
+                        let c = self.asm.as_mut().unwrap().assembler.circuit.as_mut().unwrap();
+                        c.stim.pressed.insert((button, String::new()));
+                        c.picking = scene == "product:wire";
+                        c.hidden = scene != "product:circuit";
+                        // look inside: the lid is hidden in this view
+                        let a = self.asm.as_mut().unwrap();
+                        let lid = a.data.components[3].id;
+                        a.data.component_mut(lid).map(|c| c.hidden = true);
+                        self.asm_regenerate(false);
+                        self.circuit_update();
+                    }
+                    "product:strength" => {
+                        let base = self.asm.as_ref().unwrap().data.components[0].id;
+                        match self.run_strength(base, 20.0, 20.0) {
+                            Ok(()) => self.sim_solve_blocking(),
+                            Err(e) => self.say(e, MsgKind::Error),
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            "heavy" => {
+                self.data = heavy_part();
+                self.regenerate(false);
+            }
+            "heavyasm" | "heavydrag" => {
+                let data = heavy_assembly();
+                self.data = data.skeleton.clone();
+                self.asm = Some(super::assembly::AsmSession::new(data));
+                self.asm_regenerate(false);
+                if scene == "heavydrag" {
+                    self.assemble_part("BOLT_M10");
+                }
+            }
             "assemble" => {
                 let mut data = sample_assembly();
                 data.components.retain(|c| c.id != 104);
@@ -1061,6 +1165,9 @@ impl App {
 
     pub fn demo_tick(&mut self, ctx: &egui::Context) {
         let n = FRAME.fetch_add(1, Ordering::Relaxed);
+        if let Ok(mode) = std::env::var("FREO_PROFILE") {
+            self.profile_tick(ctx, n, &mode);
+        }
         // the right-click menu of the Datei öffnen list, drawn where a click on "Projekt A" would open it
         if std::env::var("FREO_DEMO").as_deref() == Ok("fsmenu") && n > 2 {
             let d = self.work_dir.clone();
@@ -1113,6 +1220,67 @@ impl App {
             let rgb = img.pixels.iter().map(|c| [c.r(), c.g(), c.b()]).collect();
             let png = crate::softrender::encode_png(&crate::softrender::Image { w, h, rgb });
             let _ = std::fs::write(&shot, png);
+            if std::env::var("FREO_EXIT").is_ok() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        }
+    }
+}
+
+thread_local! {
+    static PROFILE: std::cell::RefCell<(Option<std::time::Instant>, Vec<f64>)> = const { std::cell::RefCell::new((None, Vec::new())) };
+}
+
+impl App {
+    /// FREO_PROFILE=orbit|zoom|hover|drag: animates that interaction for 360 frames in the real
+    /// window and prints the frame intervals (what the screen shows, GPU included) to stderr.
+    fn profile_tick(&mut self, ctx: &egui::Context, n: u32, mode: &str) {
+        const START: u32 = 40;
+        const FRAMES: usize = 360;
+        if n < START {
+            ctx.request_repaint();
+            return;
+        }
+        let k = (n - START) as f32;
+        let swing = if (n / 60) % 2 == 0 { 1.0 } else { -1.0 };
+        let size = self.viewport_size;
+        match mode {
+            "orbit" => self.camera.orbit(6.0, 1.5),
+            "zoom" => self.camera.zoom_at(if swing > 0.0 { 0.985 } else { 1.0 / 0.985 }, (size.0 * 0.5, size.1 * 0.5), size),
+            "hover" => {
+                let p = (size.0 * 0.5 + (k * 0.21).cos() * size.0 * 0.3, size.1 * 0.5 + (k * 0.13).sin() * size.1 * 0.3);
+                self.hover = self.pick_at(p);
+            }
+            "drag" => self.place_drag(5.0 * swing, 2.0 * swing, false),
+            _ => {}
+        }
+        let now = std::time::Instant::now();
+        let done = PROFILE.with(|p| {
+            let mut p = p.borrow_mut();
+            if let Some(last) = p.0 {
+                p.1.push(now.duration_since(last).as_secs_f64() * 1000.0);
+            }
+            p.0 = Some(now);
+            if p.1.len() < FRAMES {
+                return None;
+            }
+            let mut t = std::mem::take(&mut p.1);
+            t.sort_by(|a, b| a.total_cmp(b));
+            Some(t)
+        });
+        ctx.request_repaint();
+        if let Some(t) = done {
+            let m = t.iter().sum::<f64>() / t.len() as f64;
+            let slow = t.iter().filter(|&&x| x > 25.0).count();
+            eprintln!(
+                "FREO_PROFILE {mode} ({}): frame interval mean {m:.2} ms  p50 {:.2}  p95 {:.2}  p99 {:.2}  max {:.2}  frames > 25 ms: {slow}/{}",
+                std::env::var("FREO_DEMO").unwrap_or_default(),
+                t[t.len() / 2],
+                t[t.len() * 95 / 100],
+                t[t.len() * 99 / 100],
+                t[t.len() - 1],
+                t.len()
+            );
             if std::env::var("FREO_EXIT").is_ok() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }

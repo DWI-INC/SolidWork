@@ -14,10 +14,17 @@ use crate::pcb::{
     Board,
 };
 use eframe::egui;
+use eframe::egui::{Color32, Pos2, Stroke};
 use std::collections::VecDeque;
 
+mod circuit;
+mod library;
 mod placement;
+mod strength;
+pub use circuit::CircuitUi;
+pub use library::LibraryUi;
 pub(super) use placement::Guide;
+pub use strength::StrengthUi;
 
 pub struct Assembler {
     pub active: bool,
@@ -28,11 +35,14 @@ pub struct Assembler {
     thread: usize,
     length: u16,
     pub bench: Option<BenchWindow>,
+    pub library: Option<LibraryUi>,
+    pub circuit: Option<CircuitUi>,
+    pub strength: Option<StrengthUi>,
 }
 
 impl Default for Assembler {
     fn default() -> Self {
-        Self { active: false, screws: false, screw_used: false, pending: VecDeque::new(), head: Head::Phillips, thread: 2, length: 10, bench: None }
+        Self { active: false, screws: false, screw_used: false, pending: VecDeque::new(), head: Head::Phillips, thread: 2, length: 10, bench: None, library: None, circuit: None, strength: None }
     }
 }
 
@@ -463,10 +473,8 @@ impl App {
                 }
                 a.assembler.screws = true;
             }
-            for (module, label) in [(Module::Esp32, "ESP32"), (Module::Pi4, "Raspberry Pi 4")] {
-                if large(ui, Icon::Pcb3d, label, free, false).on_hover_text(module.name()).clicked() {
-                    self.assembler_place_module(module);
-                }
+            if large(ui, Icon::Pcb3d, "Bibliothek", free, false).on_hover_text("Mikrocontroller, Bauteile, Befestigung und Gehäuse aus der eingebauten Teilebibliothek").clicked() {
+                self.open_library();
             }
         });
         group(ui, "Leiterplatte", |ui| {
@@ -497,6 +505,17 @@ impl App {
                     }
                 }
             });
+            let has_device = self.asm.as_ref().unwrap().data.parts.iter().any(|p| p.device.is_some());
+            if large(ui, Icon::PcbErc, "Schaltung\ntesten", free && has_device, false).on_hover_text("Pins verdrahten, Versorgung einschalten, Taster drücken: LEDs leuchten im Modell").clicked() {
+                self.open_circuit();
+            }
+            let target = self.strength_target();
+            if large(ui, Icon::Simulate, "Festigkeit\nprüfen", free && target.is_some(), false)
+                .on_hover_text("Ausgewähltes Teil mit Lagerung und Lasten aus der Baugruppe in der Live-Simulation prüfen")
+                .clicked()
+            {
+                self.open_strength(target.unwrap());
+            }
             if large(ui, Icon::Interference, "Durchdringung\nprüfen", free && self.asm.as_ref().unwrap().data.components.len() > 1, false).clicked() {
                 self.run_interference();
             }
@@ -514,6 +533,9 @@ impl App {
                     tool.active = false;
                     tool.screws = false;
                     tool.bench = None;
+                    tool.library = None;
+                    tool.circuit = None;
+                    tool.strength = None;
                 }
             });
         });
@@ -529,6 +551,9 @@ impl App {
         if !self.in_asm() || self.placing() || self.drawing_active() {
             return;
         }
+        self.library_window(ctx);
+        self.circuit_window(ctx);
+        self.strength_window(ctx);
         let a = &mut self.asm.as_mut().unwrap().assembler;
         if a.bench.as_mut().is_some_and(|b| !b.show(ctx)) {
             a.bench = None;

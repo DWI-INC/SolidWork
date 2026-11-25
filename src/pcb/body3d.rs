@@ -288,9 +288,9 @@ pub fn copper_import(b: &Board) -> ImportDef {
 
 /// Separate bodies retain the bearing faces and drill axes of the laminate when the
 /// populated PCB is placed as one rigid assembly component.
-fn add_import_body(m: &mut ModelData, name: &str, color: [f32; 3], def: ImportDef) {
+pub(crate) fn add_import_body(m: &mut ModelData, name: &str, color: [f32; 3], def: ImportDef) -> u64 {
     if def.faces.is_empty() {
-        return;
+        return 0;
     }
     let id = m.next_id;
     m.features.push(Feature { id, name: name.into(), suppressed: false, hidden: false, kind: FeatureKind::new_body(BodyOp::New) });
@@ -298,6 +298,7 @@ fn add_import_body(m: &mut ModelData, name: &str, color: [f32; 3], def: ImportDe
     m.feature_body.insert(id + 1, id);
     m.feature_colors.insert(id + 1, color);
     m.next_id += 2;
+    id + 1
 }
 
 pub fn populated_part(b: &Board, name: &str) -> Result<ModelData, String> {

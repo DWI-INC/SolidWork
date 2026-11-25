@@ -41,12 +41,18 @@ impl Style {
 }
 
 /// Geometry that only changes on regeneration.
+#[derive(Clone, Default)]
 pub struct ModelBuffers {
     pub generation: u64,
     /// pos(3) normal(3) colour(3) — the colour multiplies the frame colour (assembly components)
     pub solid: Vec<f32>,
     /// pos(3)
     pub edges: Vec<f32>,
+    /// float ranges of each assembly body (tag >> BODY_SHIFT) in `solid` and `edges`
+    pub bodies: std::collections::HashMap<u32, (std::ops::Range<usize>, std::ops::Range<usize>)>,
+    /// these buffers equal those of generation `.0` except in the float ranges `.1` (solid) and
+    /// `.2` (edges): the renderer then uploads only those
+    pub dirty: Option<(u64, std::ops::Range<usize>, std::ops::Range<usize>)>,
 }
 
 /// Per-frame draw request.
@@ -58,10 +64,10 @@ pub struct FrameData {
     pub opacity: f32,
     pub style: Style,
     pub section: Option<[f32; 4]>,
-    /// pos(3) normal(3) — highlighted faces
-    pub hl_tris: Vec<f32>,
+    /// pos(3) normal(3) — highlighted faces (kept on the GPU while the same `Arc` comes back)
+    pub hl_tris: Arc<Vec<f32>>,
     pub hl_color: [f32; 4],
-    pub hover_tris: Vec<f32>,
+    pub hover_tris: Arc<Vec<f32>>,
     /// analysis colours: triangles (pos(3) normal(3)) per colour, drawn over the model
     pub overlay: Arc<Vec<(Vec<f32>, [f32; 4])>>,
     /// pos(3) rgba(4)
@@ -85,6 +91,9 @@ pub struct Renderer {
     generation: u64,
     scratch: Option<(glow::VertexArray, glow::Buffer)>,
     scratch_lit: Option<(glow::VertexArray, glow::Buffer)>,
+    /// uploaded highlight triangles: the data they came from, the buffer and its vertex count
+    hover_mesh: Option<(Arc<Vec<f32>>, (glow::VertexArray, glow::Buffer), i32)>,
+    hl_mesh: Option<(Arc<Vec<f32>>, (glow::VertexArray, glow::Buffer), i32)>,
 }
 
 const LIT_VS: &str = r#"
@@ -108,6 +117,8 @@ void main() {
     if (!gl_FrontFacing) n = -n;
     if (u_mode == 1) { frag = u_color; return; }
     if (u_mode == 2) { frag = vec4(1.0, 1.0, 1.0, 1.0); return; }
+    // lit LEDs (colour channels above 2): self-luminous, unshaded
+    if (v_col.r >= 2.0) { vec3 e = v_col - vec3(2.0); frag = vec4(min(e * 1.15 + vec3(0.08), vec3(1.0)), u_color.a); return; }
     vec3 l1 = normalize(vec3(0.35, 0.55, 1.0));
     vec3 l2 = normalize(vec3(-0.6, -0.2, 0.5));
     float d = max(dot(n, l1), 0.0) * 0.58 + max(dot(n, l2), 0.0) * 0.24;
@@ -205,6 +216,8 @@ impl Renderer {
                 generation: 0,
                 scratch: None,
                 scratch_lit: None,
+                hover_mesh: None,
+                hl_mesh: None,
             }
         }
     }
@@ -240,6 +253,25 @@ impl Renderer {
 
     pub fn paint(&mut self, gl: &glow::Context, f: &FrameData) {
         unsafe {
+            let partial = f.model.dirty.as_ref().filter(|d| {
+                d.0 == self.generation
+                    && self.solid.as_ref().map_or(0, |m| m.count as usize * 9) == f.model.solid.len()
+                    && self.edges.as_ref().map_or(0, |m| m.count as usize * 3) == f.model.edges.len()
+            });
+            if let (true, Some((_, sr, er))) = (self.generation != f.model.generation, partial) {
+                // a dragged assembly component: only its vertices changed
+                if let (Some(m), false) = (&self.solid, sr.is_empty()) {
+                    gl.bind_buffer(glow::ARRAY_BUFFER, Some(m.vbo));
+                    gl.buffer_sub_data_u8_slice(glow::ARRAY_BUFFER, (sr.start * 4) as i32, bytes(&f.model.solid[sr.clone()]));
+                }
+                if let (Some(m), false) = (&self.edges, er.is_empty()) {
+                    let colored: Vec<f32> = f.model.edges[er.clone()].chunks(3).flat_map(|p| [p[0], p[1], p[2], 0.0, 0.0, 0.0, 1.0]).collect();
+                    gl.bind_buffer(glow::ARRAY_BUFFER, Some(m.vbo));
+                    gl.buffer_sub_data_u8_slice(glow::ARRAY_BUFFER, (er.start / 3 * 7 * 4) as i32, bytes(&colored));
+                }
+                gl.bind_buffer(glow::ARRAY_BUFFER, None);
+                self.generation = f.model.generation;
+            }
             if self.generation != f.model.generation {
                 Self::free(gl, self.solid.take());
                 Self::free(gl, self.edges.take());
@@ -304,17 +336,25 @@ impl Renderer {
                 gl.draw_arrays(glow::TRIANGLES, 0, n);
                 gl.depth_mask(true);
             }
-            // highlights (selected / preselected faces)
-            for (tris, col) in [(&f.hover_tris, [0.35, 0.75, 1.0, 0.55]), (&f.hl_tris, f.hl_color)] {
+            // highlights (selected / preselected faces), uploaded again only when they change
+            for (hover, col) in [(true, [0.35, 0.75, 1.0, 0.55]), (false, f.hl_color)] {
+                let tris = if hover { &f.hover_tris } else { &f.hl_tris };
                 if tris.is_empty() {
                     continue;
                 }
+                let slot = if hover { &mut self.hover_mesh } else { &mut self.hl_mesh };
+                if slot.as_ref().is_none_or(|m| !Arc::ptr_eq(&m.0, tris)) {
+                    let mut buf = slot.take().map(|m| m.1);
+                    let n = Self::dynamic(gl, &mut buf, tris, &[3, 3]);
+                    *slot = Some((tris.clone(), buf.unwrap(), n));
+                }
+                let (_, (vao, _), n) = slot.as_ref().unwrap();
                 gl.use_program(Some(self.lit));
                 gl.uniform_1_i32(gl.get_uniform_location(self.lit, "u_mode").as_ref(), 1);
                 gl.uniform_4_f32(gl.get_uniform_location(self.lit, "u_color").as_ref(), col[0], col[1], col[2], col[3]);
-                let n = Self::dynamic(gl, &mut self.scratch_lit, tris, &[3, 3]);
+                gl.bind_vertex_array(Some(*vao));
                 gl.depth_mask(false);
-                gl.draw_arrays(glow::TRIANGLES, 0, n);
+                gl.draw_arrays(glow::TRIANGLES, 0, *n);
                 gl.depth_mask(true);
             }
             // edges

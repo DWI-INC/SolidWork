@@ -102,6 +102,23 @@ impl CPolygon {
         c
     }
 
+    /// `*dst = self.transformed(x)`, reusing `dst`'s vertex storage.
+    pub fn transform_into(&self, x: &Xform, dst: &mut CPolygon) {
+        dst.v.clear();
+        dst.v.extend(self.v.iter().map(|q| {
+            let mut q = q.clone();
+            q.p = x.point(q.p);
+            q.n = safe_norm(x.vector(q.n), q.n);
+            q
+        }));
+        let n = safe_norm(x.vector(self.plane.n), self.plane.n);
+        dst.plane = CPlane { n, w: n.dot(dst.v[0].p) };
+        dst.tag = self.tag;
+        if x.is_mirror() {
+            dst.v.reverse();
+        }
+    }
+
     pub fn centroid(&self) -> V3 {
         self.v.iter().fold(V3::ZERO, |s, q| s + q.p) / self.v.len().max(1) as f64
     }

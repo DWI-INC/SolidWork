@@ -6,12 +6,14 @@ pub mod config;
 pub mod gcode;
 pub mod infill;
 pub mod mesh;
+pub mod network;
 pub mod plan;
 pub mod poly;
 pub mod printers;
 pub mod slice;
 pub mod support;
 pub mod template;
+pub mod zoffset;
 
 pub use config::Settings;
 pub use plan::Progress;

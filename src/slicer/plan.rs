@@ -161,6 +161,8 @@ pub struct Plan {
     pub first_min: Pt,
     pub first_max: Pt,
     pub max_z: f64,
+    /// overhang analysis and what the support generator did
+    pub support: support::Report,
 }
 
 pub struct Progress {
@@ -573,6 +575,21 @@ pub fn plan(mesh: &Mesh, s: &Settings, prog: &Progress) -> Result<Plan, String> 
     }
     prog.set("Stützen", 150);
     let sup = support::generate(&slices, &heights, q, q.support_width);
+    {
+        let r = &sup.report;
+        if !q.support && !q.spiral_vase && r.floating > 0 {
+            warnings.push(format!(
+                "{} Bereich(e) beginnen frei in der Luft (ab Z = {:.1} mm) und fallen ohne Stützen herunter. Stützen einschalten oder das Teil drehen.",
+                r.floating,
+                r.first_floating_z.unwrap_or(0.0)
+            ));
+        } else if !q.support && !q.spiral_vase && r.needs_support() {
+            warnings.push(format!("Überhänge von etwa {:.0} mm² brauchen Stützen (bis Z = {:.1} mm). Stützen einschalten empfohlen.", r.overhang_area, r.top_overhang_z.unwrap_or(0.0)));
+        }
+        if q.support && r.stranded > 0 {
+            warnings.push(format!("{} Stützenäste finden keinen Weg zum Druckbett. „Nur auf dem Druckbett“ ausschalten oder das Teil drehen.", r.stranded));
+        }
+    }
     if prog.cancelled() {
         return Err(CANCELLED.into());
     }
@@ -860,7 +877,7 @@ pub fn plan(mesh: &Mesh, s: &Settings, prog: &Progress) -> Result<Plan, String> 
     }
     let max_z = layers.last().map(|l| l.z).unwrap_or(0.0);
     prog.set("Fertig", 900);
-    Ok(Plan { layers, warnings, first_min: fmin, first_max: fmax, max_z })
+    Ok(Plan { layers, warnings, first_min: fmin, first_max: fmax, max_z, support: sup.report.clone() })
 }
 
 fn trim_end(v: &mut Vec<Pt>, mut d: f64) {
@@ -1032,7 +1049,23 @@ fn layer_work(i: usize, slices: &[Shapes], heights: &[f64], q: &Process, _f: &Fi
     // support lines
     let sw = q.support_width;
     let ssp = q.spacing(sw, h);
-    if !sup.base[i].is_empty() {
+    if !sup.base[i].is_empty() && sup.tree {
+        // tree branches: a wall around every branch, sparse lines inside the thick trunks
+        let mut lines: Vec<Line> = vec![];
+        for sh in &sup.base[i] {
+            for c in sh {
+                if c.len() >= 3 && poly::contour_len(c) > sw * 2.0 {
+                    lines.push(Line { pts: c.clone(), closed: true });
+                }
+            }
+        }
+        let core = poly::offset(&sup.base[i], -sw);
+        if !core.is_empty() {
+            let sp = q.support_spacing.max(ssp);
+            lines.extend(infill::parallel(&core, q.support_angle + 45.0 * (i % 2) as f64, sp, 0.0).into_iter().map(Line::open));
+        }
+        out.support.push(Fill { role: Role::Support, lines, region: sup.base[i].clone(), width: sw, spacing: q.support_spacing.max(ssp), flow: 1.0, keep_order: false });
+    } else if !sup.base[i].is_empty() {
         let lines: Vec<Line> = infill::monotonic_order(infill::parallel(&sup.base[i], q.support_angle, q.support_spacing.max(ssp), 0.0), q.support_angle).into_iter().map(Line::open).collect();
         out.support.push(Fill { role: Role::Support, lines, region: sup.base[i].clone(), width: sw, spacing: q.support_spacing.max(ssp), flow: 1.0, keep_order: true });
     }

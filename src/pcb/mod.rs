@@ -11,6 +11,8 @@ pub mod board;
 pub mod bench;
 pub mod body3d;
 pub mod bom;
+pub mod circuit;
+pub mod devices;
 pub mod demo;
 pub mod drc;
 pub mod fab;

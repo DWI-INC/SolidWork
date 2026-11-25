@@ -189,9 +189,39 @@ impl App {
             }
         }
         let dragging = resp.dragged() && orbit_btn;
-        // Component Placement: drag moves the component being placed, ⇧ drag rotates it
+        // Component Placement: the move gizmo's arrows move along one axis, its centre in the
+        // screen plane; elsewhere a drag moves the component being placed, ⇧ drag rotates it
+        let gizmo = self.gizmo_layout();
+        let grab_id = egui::Id::new("asm_gizmo_grab");
+        let mut grabbed: Option<super::gizmo::Handle> = ui.ctx().data(|d| d.get_temp(grab_id)).flatten();
+        if gizmo.is_none() {
+            grabbed = None;
+        }
+        if resp.drag_started_by(egui::PointerButton::Primary) && !mods.alt {
+            grabbed = gizmo.as_ref().zip(pointer.press_origin()).and_then(|(g, p)| g.hit(p - rect.min.to_vec2()));
+        }
+        if !pointer.primary_down() && !resp.drag_stopped() {
+            grabbed = None;
+        }
+        let gizmo_hot = grabbed.or_else(|| gizmo.as_ref().zip(hover_pos).and_then(|(g, p)| g.hit(p - rect.min.to_vec2())));
         if self.placing() && resp.dragged_by(egui::PointerButton::Primary) && !mods.alt && (delta.x != 0.0 || delta.y != 0.0) {
-            self.place_drag(delta.x, delta.y, mods.shift);
+            // egui reports a drag only after a few pixels: the first step starts at the press
+            let now = hover_pos.or(pointer.latest_pos()).unwrap_or_default();
+            let step = match pointer.press_origin() {
+                Some(o) if resp.drag_started() => now - o,
+                _ => delta,
+            };
+            match grabbed {
+                Some(h) => self.gizmo_drag(h, now - rect.min.to_vec2(), step),
+                None => self.place_drag(delta.x, delta.y, mods.shift),
+            }
+        }
+        if resp.drag_stopped() {
+            grabbed = None;
+        }
+        ui.ctx().data_mut(|d| d.insert_temp(grab_id, grabbed));
+        if gizmo_hot.is_some() {
+            ui.ctx().set_cursor_icon(if grabbed.is_some() { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Grab });
         }
 
         if self.sketch.is_some() && self.resetup.is_some() {
@@ -228,7 +258,9 @@ impl App {
                 Some(p) if hover_pos.is_some() => self.owner(p),
                 _ => None,
             };
-            if resp.clicked() && !mods.alt && self.placement_guide().is_some() {
+            if resp.clicked() && gizmo_hot.is_some() {
+                // a click on the gizmo is not a pick of the geometry behind it
+            } else if resp.clicked() && !mods.alt && self.placement_guide().is_some() {
                 if let Some(hp) = hover_pos { self.guided_click(local(hp), target_hole); }
                 self.mini = None;
             } else if resp.clicked() && !mods.alt && ui.ctx().data(|d| d.get_temp::<egui::Rect>(egui::Id::new("dir_arrow"))).is_some_and(|r| hover_pos.is_some_and(|p| r.contains(p))) {
@@ -237,7 +269,8 @@ impl App {
                 let p0 = hover_pos.and_then(|hp| self.pick_at(local(hp)));
                 let consumed = hover_pos.is_some_and(|hp| self.annot_click(ui.ctx(), hp, local(hp), p0, mods.shift || mods.command))
                     || hover_pos.map(|hp| self.dims_click(hp)).unwrap_or(false)
-                    || self.sim_click(hover_pos.map(|hp| local(hp)));
+                    || self.sim_click(hover_pos.map(|hp| local(hp)))
+                    || hover_pos.is_some_and(|hp| self.circuit_click(local(hp)));
                 if !consumed {
                     let p = hover_pos.and_then(|hp| self.pick_at(local(hp)));
                     if self.edit_dims.is_some() {
@@ -253,7 +286,7 @@ impl App {
                     };
                 }
             }
-            if resp.double_clicked() && self.editor.is_none() && !self.placing() {
+            if resp.double_clicked() && self.editor.is_none() && !self.placing() && !self.circuit_picking() {
                 if let Some(o) = hover_pos.and_then(|hp| self.pick_at(local(hp))).and_then(|p| self.owner(p)) {
                     if self.in_asm() {
                         if self.component(o).is_some() {
@@ -278,21 +311,28 @@ impl App {
         }
 
         // ---- build GL frame ----
-        let r = self.displayed().clone();
+        // a shallow copy (shared topology, no solid polygons): cloning the whole result every
+        // frame cost milliseconds on large parts
+        let r = self.displayed().view_clone();
         let (faces, edges, planes, axes) = self.highlight_sets();
-        let mut hl_tris = vec![];
-        face_tris(&r, &faces, &mut hl_tris);
-        let mut hover_tris = vec![];
+        let hover_faces = match self.hover {
+            Some(Pick::Face(f)) if !faces.contains(&f) => vec![f],
+            Some(Pick::Feature(id)) => self.faces_of_feature(id),
+            _ => vec![],
+        };
+        // the triangles are made (and uploaded) again only when the faces or the model change
+        let [hl_tris, hover_tris] = [(0, &faces), (1, &hover_faces)].map(|(k, fs)| match &self.hl_cache[k] {
+            Some((g, f, t)) if *g == r.generation && f == fs => t.clone(),
+            _ => {
+                let mut t = vec![];
+                face_tris(&r, fs, &mut t);
+                let t = Arc::new(t);
+                self.hl_cache[k] = Some((r.generation, fs.clone(), t.clone()));
+                t
+            }
+        });
         let mut glass = vec![];
         let mut lines = vec![];
-        match self.hover {
-            Some(Pick::Face(f)) if !faces.contains(&f) => face_tris(&r, &[f], &mut hover_tris),
-            Some(Pick::Feature(id)) => {
-                let fs = self.faces_of_feature(id);
-                face_tris(&r, &fs, &mut hover_tris);
-            }
-            _ => {}
-        }
         let back = self.camera.back();
         if !simple && self.show_planes || self.editor.as_ref().map(|e| e.pick.is_some()).unwrap_or(false) {
             for p in &r.planes {
@@ -485,8 +525,10 @@ impl App {
             painter.circle_filled(pos, 1.75, Color32::WHITE);
         }
         if target_hole.is_some() { ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand); }
+        self.paint_gizmo(&painter, rect.min.to_vec2(), gizmo_hot);
         // ---- overlays ----
-        let to_screen = |p: V3| self.camera.project(p, size).map(|s| Pos2::new(rect.min.x + s.0, rect.min.y + s.1));
+        let proj = self.camera.projector(size);
+        let to_screen = |p: V3| proj.project(p).map(|s| Pos2::new(rect.min.x + s.0, rect.min.y + s.1));
         let chain_line = |ci: usize, col: Color32, w: f32| {
             if let Some(c) = r.topo.chains.get(ci) {
                 let mut pts: Vec<Pos2> = c.points.iter().filter_map(|p| to_screen(*p)).collect();
@@ -512,6 +554,7 @@ impl App {
         self.draw_direction_arrow(&painter, &to_screen);
         self.draw_loop_offer(&painter, &to_screen);
         self.draw_annots(&painter, &to_screen);
+        self.draw_circuit(&painter, &to_screen);
         if self.show_tags && !simple {
             if self.show_planes {
                 for p in &r.planes {

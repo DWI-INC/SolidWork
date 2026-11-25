@@ -284,7 +284,7 @@ impl App {
             }
             GfxItem::Repaint => {
                 if r.clicked() {
-                    self.buffers = Arc::new(render::ModelBuffers { generation: 0, solid: vec![], edges: vec![] });
+                    self.buffers = Arc::new(render::ModelBuffers::default());
                 }
             }
             GfxItem::Style => popup(ui, "gt_style", egui::PopupCloseBehavior::CloseOnClick, &mut |ui| self.style_menu(ui)),

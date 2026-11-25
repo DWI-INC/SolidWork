@@ -26,6 +26,8 @@ pub enum Mat {
     LedRed,
     Brass,
     Band(u8),
+    /// any other colour (library parts: board laminates, caps, labels)
+    Rgb(u8, u8, u8),
 }
 
 impl Mat {
@@ -43,6 +45,7 @@ impl Mat {
             Mat::LedRed => [0.92, 0.16, 0.14],
             Mat::Brass => [0.72, 0.60, 0.32],
             Mat::Band(k) => BAND_RGB[k as usize % BAND_RGB.len()],
+            Mat::Rgb(r, g, b) => [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0],
         }
     }
     pub fn name(self) -> String {
@@ -59,6 +62,7 @@ impl Mat {
             Mat::LedRed => "LED_ROT".into(),
             Mat::Brass => "MESSING".into(),
             Mat::Band(k) => format!("RING_{}", BAND_NAME[k as usize % BAND_NAME.len()]),
+            Mat::Rgb(r, g, b) => format!("FARBE_{r:02X}{g:02X}{b:02X}"),
         }
     }
 }
@@ -126,7 +130,7 @@ impl Model {
         (v.len() - 1) as u32
     }
     /// Flat polygon (convex, any winding); the normal follows the right-hand rule.
-    fn poly(&mut self, m: Mat, pts: &[V3]) {
+    pub fn poly(&mut self, m: Mat, pts: &[V3]) {
         if pts.len() < 3 {
             return;
         }
@@ -138,7 +142,7 @@ impl Model {
         }
     }
     /// Quad a b c d (counter-clockwise seen from outside).
-    fn quad(&mut self, m: Mat, a: V3, b: V3, c: V3, d: V3) {
+    pub fn quad(&mut self, m: Mat, a: V3, b: V3, c: V3, d: V3) {
         self.poly(m, &[a, b, c, d]);
     }
     /// Axis-aligned box.
@@ -249,6 +253,243 @@ impl Model {
     pub fn triangles(&self) -> usize {
         self.parts.iter().map(|p| p.2.len()).sum()
     }
+    /// Truncated cone from `a` (radius r0) to `b` (radius r1), smooth sides, closed ends.
+    pub fn cone(&mut self, m: Mat, a: V3, b: V3, r0: f64, r1: f64, seg: usize) {
+        let len = dot(sub(b, a), sub(b, a)).sqrt();
+        let d = norm(sub(b, a));
+        let u = norm(cross(if d[2].abs() < 0.9 { [0.0, 0.0, 1.0] } else { [1.0, 0.0, 0.0] }, d));
+        let v = cross(d, u);
+        let slope = (r0 - r1) / len.max(1e-9);
+        let k = self.mesh(m);
+        let base = self.parts[k].1.len() as u32;
+        for i in 0..seg {
+            let t = i as f64 / seg as f64 * std::f64::consts::TAU;
+            let radial = add(mul(u, t.cos()), mul(v, t.sin()));
+            let n = norm(add(radial, mul(d, slope)));
+            self.vert(k, add(a, mul(radial, r0)), n);
+            self.vert(k, add(b, mul(radial, r1)), n);
+        }
+        for i in 0..seg as u32 {
+            let j = (i + 1) % seg as u32;
+            let (a0, b0, a1, b1) = (base + 2 * i, base + 2 * i + 1, base + 2 * j, base + 2 * j + 1);
+            self.parts[k].2.push([a0, a1, b1]);
+            self.parts[k].2.push([a0, b1, b0]);
+        }
+        let ring = |c: V3, r: f64, i: usize| {
+            let t = i as f64 / seg as f64 * std::f64::consts::TAU;
+            add(c, mul(add(mul(u, t.cos()), mul(v, t.sin())), r))
+        };
+        if r1 > 1e-6 {
+            let cap: Vec<V3> = (0..seg).map(|i| ring(b, r1, i)).collect();
+            self.poly(m, &cap);
+        }
+        if r0 > 1e-6 {
+            let cap: Vec<V3> = (0..seg).rev().map(|i| ring(a, r0, i)).collect();
+            self.poly(m, &cap);
+        }
+    }
+    /// Flat ring in the plane z, facing up (or down when `down`).
+    pub fn annulus(&mut self, m: Mat, c: P, r0: f64, r1: f64, z: f64, seg: usize, down: bool) {
+        for i in 0..seg {
+            let (t0, t1) = (i as f64 / seg as f64 * std::f64::consts::TAU, (i + 1) as f64 / seg as f64 * std::f64::consts::TAU);
+            let q = |r: f64, t: f64| [c.x + r * t.cos(), c.y + r * t.sin(), z];
+            let quad = [q(r0, t0), q(r1, t0), q(r1, t1), q(r0, t1)];
+            if down {
+                self.poly(m, &[quad[3], quad[2], quad[1], quad[0]]);
+            } else {
+                self.poly(m, &quad);
+            }
+        }
+    }
+    /// Box with rounded vertical edges (corner radius r).
+    pub fn rbox(&mut self, m: Mat, lo: V3, hi: V3, r: f64) {
+        let ring = rounded_rect(p((lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0), hi[0] - lo[0], hi[1] - lo[1], r, 4);
+        self.prism(m, &ring, lo[2], hi[2]);
+    }
+    /// Box in a horizontal frame: `o` the origin, `d` the unit direction of u (sideways v is
+    /// d turned 90° counter-clockwise), z vertical.
+    pub fn obox(&mut self, m: Mat, o: P, d: P, u: (f64, f64), v: (f64, f64), z: (f64, f64)) {
+        let s = p(-d.y, d.x);
+        let w = |a: f64, b: f64, c: f64| -> V3 {
+            let q = o + d * a + s * b;
+            [q.x, q.y, c]
+        };
+        let c = |i: usize| w(if i & 1 != 0 { u.1 } else { u.0 }, if i & 2 != 0 { v.1 } else { v.0 }, if i & 4 != 0 { z.1 } else { z.0 });
+        for f in [[0, 2, 3, 1], [4, 5, 7, 6], [0, 1, 5, 4], [2, 6, 7, 3], [0, 4, 6, 2], [1, 3, 7, 5]] {
+            self.quad(m, c(f[0]), c(f[1]), c(f[2]), c(f[3]));
+        }
+    }
+    /// Connector receptacle with a real opening: an outer shell (w × h, corner radius r) whose
+    /// mouth is at `at` (board x/y) facing `d`, reaching `depth` back into the board; the
+    /// opening (wall `wall`) is `cavity` deep with a dark floor. `zc` is the mouth's centre
+    /// height. Returns nothing; tongues and latches are added by the caller with [`obox`].
+    pub fn port(&mut self, shell: Mat, inside: Mat, at: P, d: P, zc: f64, size: (f64, f64, f64), wall: f64, depth: f64, cavity: f64) {
+        let (w, h, r) = size;
+        let s = p(-d.y, d.x);
+        let n = 5;
+        let outer = rounded_rect(P::ZERO, w, h, r, n);
+        let inner = rounded_rect(P::ZERO, w - 2.0 * wall, h - 2.0 * wall, (r - wall).max(0.05), n);
+        let w3 = |q: P, u: f64| -> V3 {
+            let b = at + d * u + s * q.x;
+            [b.x, b.y, zc + q.y]
+        };
+        let ccw = super::geom::area(&outer) > 0.0;
+        let (outer, inner): (Vec<P>, Vec<P>) = if ccw { (outer, inner) } else { (outer.into_iter().rev().collect(), inner.into_iter().rev().collect()) };
+        let k = outer.len();
+        // mouth face (normal +u)
+        for i in 0..k {
+            let j = (i + 1) % k;
+            self.poly(shell, &[w3(outer[i], 0.0), w3(outer[j], 0.0), w3(inner[j], 0.0), w3(inner[i], 0.0)]);
+        }
+        // outer walls and back
+        self.ring_wall(shell, &outer, |q, u| w3(q, u), -depth, 0.0, false);
+        let back: Vec<V3> = outer.iter().rev().map(|&q| w3(q, -depth)).collect();
+        self.poly(shell, &back);
+        // the opening: inner walls facing inwards, dark floor
+        self.ring_wall(shell, &inner, |q, u| w3(q, u), -cavity, 0.0, true);
+        let floor: Vec<V3> = inner.iter().map(|&q| w3(q, -cavity)).collect();
+        self.poly(inside, &floor);
+    }
+    /// Smooth wall along the u axis over a closed loop (counter-clockwise in the loop's own
+    /// plane); `inward` flips it for the inside of an opening.
+    fn ring_wall(&mut self, m: Mat, ring: &[P], w3: impl Fn(P, f64) -> V3, u0: f64, u1: f64, inward: bool) {
+        let k = self.mesh(m);
+        let n = ring.len();
+        let base = self.parts[k].1.len() as u32;
+        let probe = w3(P::ZERO, 0.0);
+        for i in 0..n {
+            let (a, b) = (ring[(i + n - 1) % n], ring[(i + 1) % n]);
+            let t = (b - a).normalize_or_zero();
+            let ln = p(t.y, -t.x) * if inward { -1.0 } else { 1.0 };
+            let wn = sub(w3(ln, 0.0), probe);
+            self.vert(k, w3(ring[i], u0), wn);
+            self.vert(k, w3(ring[i], u1), wn);
+        }
+        for i in 0..n as u32 {
+            let j = (i + 1) % n as u32;
+            let (a0, b0, a1, b1) = (base + 2 * i, base + 2 * i + 1, base + 2 * j, base + 2 * j + 1);
+            if inward {
+                self.parts[k].2.push([a0, b1, a1]);
+                self.parts[k].2.push([a0, b0, b1]);
+            } else {
+                self.parts[k].2.push([a0, a1, b1]);
+                self.parts[k].2.push([a0, b1, b0]);
+            }
+        }
+    }
+}
+
+/// Board-edge receptacles of the library boards and modules.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Receptacle {
+    MicroB,
+    MiniB,
+    TypeC,
+    TypeB,
+    /// one USB-A port with the tongue colour (stack two for a dual port)
+    TypeA(Mat),
+    MicroHdmi,
+    Rj45,
+    Barrel,
+}
+
+const CAVITY: Mat = Mat::Rgb(18, 18, 20);
+const INSERT_WHITE: Mat = Mat::Rgb(236, 236, 230);
+
+/// A receptacle whose mouth centre is at `at` on the board edge, opening towards `d` (unit,
+/// horizontal), standing on the board surface `z`. Returns the mouth's height above `z`.
+pub fn receptacle(m: &mut Model, kind: Receptacle, at: P, d: P, z: f64) -> f64 {
+    match kind {
+        Receptacle::MicroB | Receptacle::MiniB | Receptacle::TypeC | Receptacle::MicroHdmi => {
+            let (w, h, r, depth, tongue) = match kind {
+                Receptacle::MicroB => (7.5, 2.6, 0.55, 5.0, (3.0, 0.15, 0.6)),
+                Receptacle::MiniB => (7.7, 3.9, 0.5, 9.2, (2.7, 0.1, 0.65)),
+                Receptacle::TypeC => (8.94, 3.26, 1.55, 7.35, (3.3, -0.33, 0.33)),
+                _ => (7.2, 3.4, 0.5, 7.5, (2.5, -0.3, 0.3)),
+            };
+            let zc = z + h / 2.0;
+            m.port(Mat::Metal, CAVITY, at, d, zc, (w, h, r), 0.25, depth, depth - 0.8);
+            m.obox(Mat::Plastic, at, d, (-depth + 0.8, -0.5), (-tongue.0, tongue.0), (zc + tongue.1, zc + tongue.2));
+            // solder tabs on both sides
+            for side in [-1.0, 1.0] {
+                m.obox(Mat::Metal, at, d, (-depth * 0.7, -depth * 0.3), (side * w / 2.0 - 0.6 * (1.0 - side) / 2.0, side * w / 2.0 + 0.6 * (1.0 + side) / 2.0), (z, z + 0.6));
+            }
+            h
+        }
+        Receptacle::TypeB => {
+            let (w, h, depth) = (12.0, 10.9, 16.3);
+            let zc = z + h / 2.0;
+            m.port(Mat::Metal, CAVITY, at, d, zc, (w, h, 0.4), 0.3, depth, depth - 1.0);
+            m.port(INSERT_WHITE, CAVITY, at - d * 0.5, d, zc, (w - 0.62, h - 0.62, 0.2), 1.6, depth - 1.6, 9.0);
+            m.obox(INSERT_WHITE, at, d, (-9.6, -1.5), (-2.4, 2.4), (zc - 1.6, zc + 1.4));
+            for i in 0..2 {
+                let v = -1.1 + i as f64 * 2.2;
+                for zz in [(zc - 1.62, zc - 1.6), (zc + 1.4, zc + 1.42)] {
+                    m.obox(Mat::Gold, at, d, (-8.0, -2.5), (v - 0.4, v + 0.4), zz);
+                }
+            }
+            h
+        }
+        Receptacle::TypeA(tongue) => {
+            let (w, h, depth) = (14.5, 7.8, 17.5);
+            let zc = z + h / 2.0;
+            m.port(Mat::Metal, CAVITY, at, d, zc, (w, h, 0.3), 1.0, depth, depth - 1.0);
+            m.obox(tongue, at, d, (-depth + 1.0, -1.2), (-5.6, 5.6), (zc + 0.25, zc + 2.05));
+            for i in 0..4 {
+                let v = -3.5 + i as f64 * 2.33;
+                m.obox(Mat::Gold, at, d, (-depth + 4.0, -2.0), (v - 0.5, v + 0.5), (zc + 0.2, zc + 0.25));
+            }
+            h
+        }
+        Receptacle::Rj45 => {
+            let (w, h, depth) = (15.9, 13.5, 21.0);
+            let zc = z + h / 2.0;
+            m.port(Mat::Metal, CAVITY, at, d, zc, (w, h, 0.3), 0.4, depth, depth - 0.6);
+            m.port(Mat::Plastic, CAVITY, at - d * 0.35, d, zc, (w - 0.82, h - 0.82, 0.1), 1.7, depth - 1.0, 14.0);
+            // latch notch below the opening and the contacts on its ceiling
+            let top = zc + (h - 0.82) / 2.0 - 1.7;
+            m.obox(CAVITY, at, d, (-0.36, -0.34), (-1.6, 1.6), (zc - (h - 0.82) / 2.0 + 0.4, zc - (h - 0.82) / 2.0 + 1.7));
+            for i in 0..8 {
+                let v = -3.57 + i as f64 * 1.02;
+                m.obox(Mat::Gold, at, d, (-12.0, -3.0), (v - 0.2, v + 0.2), (top - 0.35, top - 0.05));
+            }
+            // link / activity LEDs in the upper corners of the face
+            for (v, c) in [(-w / 2.0 + 1.9, Mat::Rgb(40, 200, 60)), (w / 2.0 - 1.9, Mat::Rgb(240, 170, 30))] {
+                m.obox(c, at, d, (-0.36, -0.3), (v - 1.0, v + 1.0), (zc + h / 2.0 - 2.4, zc + h / 2.0 - 1.4));
+            }
+            h
+        }
+        Receptacle::Barrel => {
+            let (w, h, depth) = (9.0, 11.0, 14.0);
+            m.obox(Mat::Plastic, at, d, (-depth, -1.2), (-w / 2.0, w / 2.0), (z, z + h));
+            let c = at - d * 1.2;
+            let zc = z + 6.5;
+            let a = [c.x, c.y, zc];
+            let mouth = at;
+            m.cyl(Mat::Plastic, a, [mouth.x, mouth.y, zc], 4.3, 32);
+            let face = |u: f64| -> V3 {
+                let q = mouth + d * u;
+                [q.x, q.y, zc]
+            };
+            m.cyl(CAVITY, face(0.0), face(0.02), 3.15, 32);
+            m.cyl(Mat::Metal, face(0.02), face(0.04), 1.0, 16);
+            h
+        }
+    }
+}
+
+/// Rounded rectangle centred at c (counter-clockwise, `n` steps per corner).
+pub fn rounded_rect(c: P, w: f64, h: f64, r: f64, n: usize) -> Vec<P> {
+    let r = r.min(w / 2.0 - 1e-6).min(h / 2.0 - 1e-6).max(1e-4);
+    let (hx, hy) = (w / 2.0 - r, h / 2.0 - r);
+    let mut v = vec![];
+    for (k, (cx, cy)) in [(hx, -hy), (hx, hy), (-hx, hy), (-hx, -hy)].into_iter().enumerate() {
+        for i in 0..=n {
+            let a = (k as f64 - 1.0 + i as f64 / n as f64) * std::f64::consts::FRAC_PI_2;
+            v.push(c + p(cx + r * a.cos(), cy + r * a.sin()));
+        }
+    }
+    v
 }
 
 fn stadium(w: f64, h: f64, c: P) -> Vec<P> {

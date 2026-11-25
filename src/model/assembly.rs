@@ -209,6 +209,9 @@ pub struct PartEntry {
     /// Routed board as inserted, used by the GPIO bench after reopening the assembly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub board: Option<Arc<crate::pcb::Board>>,
+    /// Library electronics: pins and lamps for the circuit simulation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<crate::pcb::devices::Device>,
     #[serde(skip)]
     pub modified: bool,
 }
@@ -221,11 +224,14 @@ pub struct AssemblyData {
     pub parts: Vec<PartEntry>,
     pub components: Vec<Component>,
     pub next_id: u64,
+    /// Wires between library parts and the pin programs of their boards.
+    #[serde(default, skip_serializing_if = "crate::pcb::circuit::Wiring::is_empty")]
+    pub wiring: crate::pcb::circuit::Wiring,
 }
 
 impl AssemblyData {
     pub fn new(name: &str) -> AssemblyData {
-        AssemblyData { name: name.into(), skeleton: skeleton(name), parts: vec![], components: vec![], next_id: FIRST_COMPONENT_ID }
+        AssemblyData { name: name.into(), skeleton: skeleton(name), parts: vec![], components: vec![], next_id: FIRST_COMPONENT_ID, wiring: Default::default() }
     }
     pub fn part(&self, name: &str) -> Option<&PartEntry> {
         self.parts.iter().find(|p| p.data.name == name)
@@ -247,7 +253,7 @@ impl AssemblyData {
     pub fn add_part(&mut self, data: ModelData, source: Option<PathBuf>) -> String {
         let name = data.name.clone();
         if self.part(&name).is_none() {
-            self.parts.push(PartEntry { data, source, modified: false, board: None });
+            self.parts.push(PartEntry { data, source, modified: false, board: None, device: None });
         }
         name
     }
@@ -356,7 +362,10 @@ fn default_sign(c: &AsmConstraint, a: &Geo, b: &Geo) -> f64 {
     let near = |u: V3, v: V3| if u.dot(v) >= 0.0 { 1.0 } else { -1.0 };
     match (a, b) {
         (Geo::Plane { n: na, .. }, Geo::Plane { n: nb, .. }) => {
-            if c.ty == AsmCType::Angle {
+            if c.sign == 2.0 {
+                // Flip pressed before the orientation was decided: reverse the current sense
+                -near(*na, *nb)
+            } else if c.ty == AsmCType::Angle {
                 1.0
             } else if surf(c.a) && surf(c.b) {
                 -1.0
@@ -375,7 +384,7 @@ fn default_sign(c: &AsmConstraint, a: &Geo, b: &Geo) -> f64 {
                 0.0
             }
         }
-        (Geo::Line { d, .. }, Geo::Plane { n, .. }) | (Geo::Plane { n, .. }, Geo::Line { d, .. }) => near(*d, *n),
+        (Geo::Line { d, .. }, Geo::Plane { n, .. }) | (Geo::Plane { n, .. }, Geo::Line { d, .. }) => if c.sign == 2.0 { -near(*d, *n) } else { near(*d, *n) },
         _ => 1.0,
     }
 }
@@ -423,7 +432,14 @@ fn residual(ty: AsmCType, sign: f64, off: f64, a: &Geo, b: &Geo, l: f64, out: &m
         (AsmCType::Normal, Plane { n: na, .. }, Plane { n: nb, .. }) | (AsmCType::Normal, Line { d: na, .. }, Line { d: nb, .. }) => out.push(na.dot(*nb) * l),
         (AsmCType::Normal, Line { d, .. }, Plane { n, .. }) | (AsmCType::Normal, Plane { n, .. }, Line { d, .. }) => v3(out, *d - *n * sign, l),
         (AsmCType::Angle, Plane { n: na, .. }, Plane { n: nb, .. }) | (AsmCType::Angle, Line { d: na, .. }, Line { d: nb, .. }) => {
-            out.push((na.dot(*nb) - sign * off.to_radians().cos()) * l)
+            let cos = sign * off.to_radians().cos();
+            if cos.abs() > 1.0 - 1e-9 {
+                // 0° / 180°: the directions coincide, which fixes two rotations (dot − cos has
+                // no gradient there and would leave the status partially constrained)
+                v3(out, *na - *nb * cos.signum(), l);
+            } else {
+                out.push((na.dot(*nb) - cos) * l)
+            }
         }
         _ => return Err(format!("{} kann kein(e) {} mit einem/einer {} verknüpfen.", ty.name(), a.kind_name(), b.kind_name())),
     }
@@ -630,22 +646,20 @@ fn solve_from(start: Placement, centre: V3, l: f64, cons: &[Prepared], target: O
 /// Regenerated parts, keyed by part name and invalidated by content.
 #[derive(Default)]
 pub struct PartCache {
-    map: HashMap<String, (u64, Arc<RegenResult>)>,
+    /// the part data each result was made from: a comparison is far cheaper than hashing the
+    /// serialised part on every call (called for every part on every drag step)
+    map: HashMap<String, (ModelData, Arc<RegenResult>)>,
 }
 
 impl PartCache {
     pub fn get(&mut self, d: &ModelData) -> Arc<RegenResult> {
-        use std::hash::{Hash, Hasher};
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        serde_json::to_string(d).unwrap_or_default().hash(&mut h);
-        let key = h.finish();
         if let Some((k, r)) = self.map.get(&d.name) {
-            if *k == key {
+            if k == d {
                 return r.clone();
             }
         }
         let r = Arc::new(regen::run(d));
-        self.map.insert(d.name.clone(), (key, r.clone()));
+        self.map.insert(d.name.clone(), (d.clone(), r.clone()));
         r
     }
 }
@@ -659,6 +673,8 @@ pub struct AsmResult {
     /// displayed placements (with explode offsets)
     pub shown: HashMap<u64, Placement>,
     pub status: HashMap<u64, PlaceStatus>,
+    /// orientation signs used for each component's constraints (decided on the solve when free)
+    pub signs: HashMap<u64, Vec<f64>>,
     pub parts: HashMap<String, Arc<RegenResult>>,
     pub skeleton: Arc<RegenResult>,
     /// body index (tag >> BODY_SHIFT) - 1 → component id
@@ -666,6 +682,31 @@ pub struct AsmResult {
     pub body_colors: Vec<[f32; 3]>,
     pub surface_colors: HashMap<u32, [f32; 3]>,
     pub messages: Vec<String>,
+    /// where each shown component's geometry sits in `display` (moved in place while dragging)
+    pub spans: HashMap<u64, BodySpan>,
+    /// the components as solved (the one being placed included), in solve order
+    pub comps: Vec<Component>,
+    /// set by `regen_moved`: `display` equals the display of generation `.0` except that
+    /// component `.1` moved (the graphics buffers update just its part)
+    pub moved: Option<(u64, u64)>,
+}
+
+/// Index ranges of one component's geometry in the merged display.
+#[derive(Clone, Default, Debug)]
+pub struct BodySpan {
+    pub body: u32,
+    pub positions: std::ops::Range<usize>,
+    pub polys: std::ops::Range<usize>,
+    pub faces: std::ops::Range<usize>,
+    pub chains: std::ops::Range<usize>,
+    pub draw_edges: std::ops::Range<usize>,
+    pub solid: std::ops::Range<usize>,
+    pub planes: std::ops::Range<usize>,
+    pub axes: std::ops::Range<usize>,
+    pub points: std::ops::Range<usize>,
+    pub curves: std::ops::Range<usize>,
+    pub cosmetics: std::ops::Range<usize>,
+    pub bbox: BBox,
 }
 
 impl AsmResult {
@@ -742,14 +783,11 @@ pub fn place_component(
         }
         let Some(ga) = local_geo(&ra, part) else { return (c.placement, PlaceStatus::Invalid("eine Komponentenreferenz fehlt".into()), signs) };
         let Some(gb) = world_geo(&rb, skel, parts, comps, placed) else { return (c.placement, PlaceStatus::Invalid("eine Baugruppenreferenz fehlt".into()), signs) };
-        let ty = if k.ty == AsmCType::Automatic {
-            if k.offset != 0.0 {
-                AsmCType::Distance
-            } else {
-                AsmCType::Coincident
-            }
-        } else {
-            k.ty
+        // a zero distance is a coincidence (|d| − 0 has no gradient for points and axes)
+        let ty = match k.ty {
+            AsmCType::Automatic | AsmCType::Distance if k.offset == 0.0 => AsmCType::Coincident,
+            AsmCType::Automatic => AsmCType::Distance,
+            t => t,
         };
         let mut kk = k.clone();
         kk.ty = ty;
@@ -769,6 +807,38 @@ pub fn place_component(
     (pl, st, signs)
 }
 
+fn placed_plane(p: &CPlane, pl: &Placement) -> CPlane {
+    let n = pl.vector(p.n);
+    CPlane { n, w: p.w + n.dot(pl.pos) }
+}
+
+fn placed_face(f: &TopoFace, pl: &Placement, poly_base: usize) -> TopoFace {
+    let normal = pl.vector(f.normal);
+    TopoFace {
+        polys: f.polys.iter().map(|i| poly_base + i).collect(),
+        planar: f.planar,
+        normal,
+        offset: f.offset + normal.dot(pl.pos),
+        area: f.area,
+        center: pl.point(f.center),
+    }
+}
+
+fn placed_chain(e: &EdgeChain, pl: &Placement, face_base: usize) -> EdgeChain {
+    let rotate = |v: &[V3]| v.iter().map(|&n| pl.vector(n)).collect::<Vec<_>>();
+    EdgeChain {
+        points: e.points.iter().map(|&p| pl.point(p)).collect(),
+        closed: e.closed,
+        face_a: face_base + e.face_a,
+        face_b: face_base + e.face_b,
+        n_a: rotate(&e.n_a),
+        n_b: rotate(&e.n_b),
+        f_a: rotate(&e.f_a),
+        f_b: rotate(&e.f_b),
+        convex: e.convex,
+    }
+}
+
 /// A placement is rigid and components never weld to each other. Reuse the cached
 /// faces and edge chains so dragging a drilled PCB doesn't rebuild its topology.
 fn append_component_topology(dst: &mut Topology, src: &Topology, pl: &Placement, body: u32) {
@@ -781,35 +851,90 @@ fn append_component_topology(dst: &mut Topology, src: &Topology, pl: &Placement,
     }
     dst.polys.extend(src.polys.iter().map(|p| p.iter().map(|v| vertex_base + v).collect()));
     dst.vnormals.extend(src.vnormals.iter().map(|v| rotate(v)));
-    dst.planes.extend(src.planes.iter().map(|p| {
-        let n = pl.vector(p.n);
-        CPlane { n, w: p.w + n.dot(pl.pos) }
-    }));
+    dst.planes.extend(src.planes.iter().map(|p| placed_plane(p, pl)));
     dst.tags.extend(src.tags.iter().map(|tag| body | (tag & ((1 << BODY_SHIFT) - 1))));
     dst.poly_face.extend(src.poly_face.iter().map(|i| face_base + i));
-    dst.faces.extend(src.faces.iter().map(|f| {
-        let normal = pl.vector(f.normal);
-        TopoFace {
-            polys: f.polys.iter().map(|i| poly_base + i).collect(),
-            planar: f.planar,
-            normal,
-            offset: f.offset + normal.dot(pl.pos),
-            area: f.area,
-            center: pl.point(f.center),
-        }
-    }));
+    dst.faces.extend(src.faces.iter().map(|f| placed_face(f, pl, poly_base)));
     dst.draw_edges.extend(src.draw_edges.iter().map(|(a, b)| (a + vertex_base, b + vertex_base)));
-    dst.chains.extend(src.chains.iter().map(|e| EdgeChain {
-        points: e.points.iter().map(|&p| pl.point(p)).collect(),
-        closed: e.closed,
-        face_a: face_base + e.face_a,
-        face_b: face_base + e.face_b,
-        n_a: rotate(&e.n_a),
-        n_b: rotate(&e.n_b),
-        f_a: rotate(&e.f_a),
-        f_b: rotate(&e.f_b),
-        convex: e.convex,
-    }));
+    dst.chains.extend(src.chains.iter().map(|e| placed_chain(e, pl, face_base)));
+}
+
+/// Moves a component's topology already in `dst` (at `span`) to placement `pl`: the same
+/// values `append_component_topology` computes, written in place.
+fn move_component_topology(dst: &mut Topology, src: &Topology, pl: &Placement, span: &mut BodySpan) {
+    let mut bbox = BBox::default();
+    for (d, &p) in dst.positions[span.positions.clone()].iter_mut().zip(&src.positions) {
+        *d = pl.point(p);
+        bbox.add(*d);
+    }
+    span.bbox = bbox;
+    for (d, v) in dst.vnormals[span.polys.clone()].iter_mut().zip(&src.vnormals) {
+        for (dn, &n) in d.iter_mut().zip(v) {
+            *dn = pl.vector(n);
+        }
+    }
+    for (d, p) in dst.planes[span.polys.clone()].iter_mut().zip(&src.planes) {
+        *d = placed_plane(p, pl);
+    }
+    for (d, f) in dst.faces[span.faces.clone()].iter_mut().zip(&src.faces) {
+        let normal = pl.vector(f.normal);
+        d.normal = normal;
+        d.offset = f.offset + normal.dot(pl.pos);
+        d.center = pl.point(f.center);
+    }
+    let face_base = span.faces.start;
+    for (d, e) in dst.chains[span.chains.clone()].iter_mut().zip(&src.chains) {
+        *d = placed_chain(e, pl, face_base);
+    }
+}
+
+/// The display data of one component at placement `pl` (the solid polygons are transformed
+/// separately). Shared by `regen` and `regen_moved` so both produce identical values.
+struct CompDisplay {
+    planes: Vec<PlaneInfo>,
+    axes: Vec<AxisInfo>,
+    points: Vec<PointInfo>,
+    curves: Vec<CurveInfo>,
+    cosmetics: Vec<Cosmetic>,
+}
+
+fn comp_display(c: &Component, part: &RegenResult, pl: &Placement) -> CompDisplay {
+    let b = &part.topo.bbox;
+    let size = if b.is_empty() { 40.0 } else { (b.diagonal() * 0.36).max(15.0) };
+    let lc = if b.is_empty() { V3::ZERO } else { b.center() };
+    CompDisplay {
+        planes: part
+            .planes
+            .iter()
+            .map(|p| {
+                let mut f = p.frame;
+                f.origin = lc - f.z() * (lc - f.origin).dot(f.z());
+                PlaneInfo { id: comp_datum_id(c.id, p.id), name: p.name.clone(), frame: pl.frame(&f), size }
+            })
+            .collect(),
+        axes: part.axes.iter().map(|a| AxisInfo { id: comp_datum_id(c.id, a.id), name: a.name.clone(), point: pl.point(a.point), dir: pl.vector(a.dir), feature: c.id }).collect(),
+        points: part.points.iter().map(|q| PointInfo { id: comp_datum_id(c.id, q.id), name: q.name.clone(), p: pl.point(q.p) }).collect(),
+        curves: part.curves.iter().map(|cu| CurveInfo { feature: c.id, polylines: cu.polylines.iter().map(|l| l.iter().map(|v| pl.point(*v)).collect()).collect() }).collect(),
+        cosmetics: part.cosmetics.iter().map(|co| Cosmetic { feature: c.id, base: pl.point(co.base), dir: pl.vector(co.dir), ..co.clone() }).collect(),
+    }
+}
+
+/// Messages of a solved assembly: invalid placements in solve order, then failed part features.
+fn asm_messages(asm: &AssemblyData, comps: &[Component], res: &AsmResult) -> Vec<String> {
+    let mut out = vec![];
+    for c in comps.iter().filter(|c| !c.suppressed) {
+        if let Some(PlaceStatus::Invalid(e)) = res.status.get(&c.id) {
+            out.push(format!("{}: {}", c.part, e));
+        }
+    }
+    for c in comps.iter().filter(|c| !c.suppressed) {
+        let (Some(part), Some(_)) = (res.parts.get(&c.part), res.shown.get(&c.id)) else { continue };
+        for (fid, e) in &part.errors {
+            let n = asm.part(&c.part).and_then(|p| p.data.feature(*fid)).map(|f| f.name.clone()).unwrap_or_default();
+            out.push(format!("{}: {} fehlgeschlagen: {}", c.part, n, e));
+        }
+    }
+    out
 }
 
 /// Regenerates every part, solves the placements in order and builds the merged display.
@@ -820,21 +945,13 @@ pub fn regen(asm: &AssemblyData, cache: &mut PartCache, opts: &RegenOpts) -> Asm
         res.parts.insert(p.data.name.clone(), cache.get(&p.data));
     }
     res.skeleton = cache.get(&asm.skeleton);
-    let mut comps: Vec<Component> = asm.components.clone();
-    if let Some(e) = opts.editing {
-        match comps.iter().position(|c| c.id == e.id) {
-            Some(i) => comps[i] = e.clone(),
-            None => comps.push(e.clone()),
-        }
-    }
+    let comps = solve_order(asm, opts.editing);
     for c in &comps {
         if c.suppressed {
             continue;
         }
-        let (pl, st, _) = place_component(c, &comps, &res.parts, &res.skeleton, &res.placements);
-        if let PlaceStatus::Invalid(e) = &st {
-            res.messages.push(format!("{}: {}", c.part, e));
-        }
+        let (pl, st, signs) = place_component(c, &comps, &res.parts, &res.skeleton, &res.placements);
+        res.signs.insert(c.id, signs);
         res.placements.insert(c.id, pl);
         res.status.insert(c.id, st);
     }
@@ -859,6 +976,7 @@ pub fn regen(asm: &AssemblyData, cache: &mut PartCache, opts: &RegenOpts) -> Asm
         let off = if opts.explode > 0.0 { centre_of.get(&c.id).map(|cc| (*cc - ac) * opts.explode).unwrap_or(V3::ZERO) + c.explode } else { V3::ZERO };
         res.shown.insert(c.id, pl.moved(off));
     }
+    res.messages = asm_messages(asm, &comps, &res);
     // merged display
     let d = &mut res.display;
     d.planes = res.skeleton.planes.clone();
@@ -867,10 +985,6 @@ pub fn regen(asm: &AssemblyData, cache: &mut PartCache, opts: &RegenOpts) -> Asm
     let mut topology = Topology::default();
     for c in comps.iter().filter(|c| !c.suppressed) {
         let (Some(part), Some(pl)) = (res.parts.get(&c.part), res.shown.get(&c.id)) else { continue };
-        for (fid, e) in &part.errors {
-            let n = asm.part(&c.part).and_then(|p| p.data.feature(*fid)).map(|f| f.name.clone()).unwrap_or_default();
-            res.messages.push(format!("{}: {} fehlgeschlagen: {}", c.part, n, e));
-        }
         res.bodies.push(c.id);
         res.body_colors.push(asm.color_of(&c.part));
         if c.hidden {
@@ -878,7 +992,20 @@ pub fn regen(asm: &AssemblyData, cache: &mut PartCache, opts: &RegenOpts) -> Asm
         }
         let body = (res.bodies.len() as u32) << BODY_SHIFT;
         let x = pl.xform();
+        let mut span = BodySpan {
+            body,
+            positions: topology.positions.len()..topology.positions.len() + part.topo.positions.len(),
+            polys: topology.polys.len()..topology.polys.len() + part.topo.polys.len(),
+            faces: topology.faces.len()..topology.faces.len() + part.topo.faces.len(),
+            chains: topology.chains.len()..topology.chains.len() + part.topo.chains.len(),
+            draw_edges: topology.draw_edges.len()..topology.draw_edges.len() + part.topo.draw_edges.len(),
+            solid: polys.len()..polys.len() + part.polys.len(),
+            ..Default::default()
+        };
         append_component_topology(&mut topology, &part.topo, pl, body);
+        for &p in &topology.positions[span.positions.clone()] {
+            span.bbox.add(p);
+        }
         if let Some(entry) = asm.part(&c.part).filter(|p| !p.data.feature_colors.is_empty()) {
             for (&tag, feature) in &part.tag_owner {
                 if let Some(color) = entry.data.feature_colors.get(feature) {
@@ -892,32 +1019,112 @@ pub fn regen(asm: &AssemblyData, cache: &mut PartCache, opts: &RegenOpts) -> Asm
             d.tag_owner.insert(q.tag, c.id);
             polys.push(q);
         }
-        let b = &part.topo.bbox;
-        let size = if b.is_empty() { 40.0 } else { (b.diagonal() * 0.36).max(15.0) };
-        let lc = if b.is_empty() { V3::ZERO } else { b.center() };
-        for p in &part.planes {
-            let mut f = p.frame;
-            f.origin = lc - f.z() * (lc - f.origin).dot(f.z());
-            d.planes.push(PlaneInfo { id: comp_datum_id(c.id, p.id), name: p.name.clone(), frame: pl.frame(&f), size });
-        }
-        for a in &part.axes {
-            d.axes.push(AxisInfo { id: comp_datum_id(c.id, a.id), name: a.name.clone(), point: pl.point(a.point), dir: pl.vector(a.dir), feature: c.id });
-        }
-        for q in &part.points {
-            d.points.push(PointInfo { id: comp_datum_id(c.id, q.id), name: q.name.clone(), p: pl.point(q.p) });
-        }
-        for cu in &part.curves {
-            d.curves.push(CurveInfo { feature: c.id, polylines: cu.polylines.iter().map(|l| l.iter().map(|v| pl.point(*v)).collect()).collect() });
-        }
-        for co in &part.cosmetics {
-            d.cosmetics.push(Cosmetic { feature: c.id, base: pl.point(co.base), dir: pl.vector(co.dir), ..co.clone() });
-        }
+        let cd = comp_display(c, part, pl);
+        let put = |len: usize, at: usize| at..at + len;
+        span.planes = put(cd.planes.len(), d.planes.len());
+        span.axes = put(cd.axes.len(), d.axes.len());
+        span.points = put(cd.points.len(), d.points.len());
+        span.curves = put(cd.curves.len(), d.curves.len());
+        span.cosmetics = put(cd.cosmetics.len(), d.cosmetics.len());
+        d.planes.extend(cd.planes);
+        d.axes.extend(cd.axes);
+        d.points.extend(cd.points);
+        d.curves.extend(cd.curves);
+        d.cosmetics.extend(cd.cosmetics);
+        res.spans.insert(c.id, span);
     }
     d.topo = Arc::new(topology);
     d.polys = polys;
     d.time = t0.elapsed().as_secs_f64();
     d.generation = regen::next_generation();
+    res.comps = comps;
     res
+}
+
+/// The components in solve order, with the one being edited replacing (or added to) the list.
+fn solve_order(asm: &AssemblyData, editing: Option<&Component>) -> Vec<Component> {
+    let mut comps: Vec<Component> = asm.components.clone();
+    if let Some(e) = editing {
+        match comps.iter().position(|c| c.id == e.id) {
+            Some(i) => comps[i] = e.clone(),
+            None => comps.push(e.clone()),
+        }
+    }
+    comps
+}
+
+/// Dragging the component being placed: when nothing but its placement changed since `prev`
+/// was made (unexploded, by `regen` or this function) and no other component refers to it,
+/// solves just that component and moves its geometry in `prev.display` in place: what a full
+/// `regen` would give, without rebuilding the other components. Returns false (leaving
+/// `prev` untouched) when a full `regen` is needed.
+pub fn regen_moved(asm: &AssemblyData, cache: &mut PartCache, editing: &Component, prev: &mut AsmResult) -> bool {
+    let t0 = std::time::Instant::now();
+    let id = editing.id;
+    let comps = solve_order(asm, Some(editing));
+    // same components, constraints and parts as when `prev` was solved, apart from this placement
+    if comps.len() != prev.comps.len()
+        || comps.iter().zip(&prev.comps).any(|(a, b)| if a.id == id { Component { placement: b.placement, ..a.clone() } != *b } else { a != b })
+    {
+        return false;
+    }
+    if comps.iter().any(|c| c.id != id && c.constraints.iter().any(|k| k.a.and_then(|r| r.comp()) == Some(id) || k.b.and_then(|r| r.comp()) == Some(id))) {
+        return false;
+    }
+    if asm.parts.len() != prev.parts.len() || asm.parts.iter().any(|p| prev.parts.get(&p.data.name).is_none_or(|r| !Arc::ptr_eq(r, &cache.get(&p.data)))) {
+        return false;
+    }
+    if !Arc::ptr_eq(&prev.skeleton, &cache.get(&asm.skeleton)) {
+        return false;
+    }
+    let Some(i) = comps.iter().position(|c| c.id == id) else { return false };
+    if editing.suppressed || editing.hidden || !prev.spans.contains_key(&id) || prev.shown.get(&id) != prev.placements.get(&id) {
+        return false;
+    }
+    let Some(part) = prev.parts.get(&editing.part).cloned() else { return false };
+    let mut placed: HashMap<u64, Placement> = HashMap::new();
+    for c in comps[..i].iter().filter(|c| !c.suppressed) {
+        if let Some(pl) = prev.placements.get(&c.id) {
+            placed.insert(c.id, *pl);
+        }
+    }
+    let (pl, st, signs) = place_component(editing, &comps, &prev.parts, &prev.skeleton, &placed);
+    let old = prev.shown[&id];
+    if pl != old {
+        let Some(topo) = Arc::get_mut(&mut prev.display.topo) else { return false };
+        let span = {
+            let s = prev.spans.get_mut(&id).unwrap();
+            move_component_topology(topo, &part.topo, &pl, s);
+            s.clone()
+        };
+        topo.bbox = prev.spans.values().fold(BBox::default(), |mut b, s| {
+            b.add_box(&s.bbox);
+            b
+        });
+        topo.ray_accel = Default::default();
+        let x = pl.xform();
+        for (d, p) in prev.display.polys[span.solid.clone()].iter_mut().zip(&part.polys) {
+            p.transform_into(&x, d);
+            d.tag = span.body | (p.tag & ((1 << BODY_SHIFT) - 1));
+        }
+        let cd = comp_display(editing, &part, &pl);
+        let d = &mut prev.display;
+        d.planes[span.planes.clone()].clone_from_slice(&cd.planes);
+        d.axes[span.axes.clone()].clone_from_slice(&cd.axes);
+        d.points[span.points.clone()].clone_from_slice(&cd.points);
+        d.curves[span.curves.clone()].clone_from_slice(&cd.curves);
+        d.cosmetics[span.cosmetics.clone()].clone_from_slice(&cd.cosmetics);
+        prev.moved = Some((d.generation, id));
+        d.generation = regen::next_generation();
+    }
+    prev.placements.insert(id, pl);
+    prev.shown.insert(id, pl);
+    prev.status.insert(id, st);
+    prev.signs.insert(id, signs);
+    prev.comps = comps;
+    prev.messages = asm_messages(asm, &prev.comps, prev);
+    prev.display.time = t0.elapsed().as_secs_f64();
+    true
 }
 
 /// Component geometry in assembly coordinates (solved, unexploded).
