@@ -196,17 +196,17 @@ impl Module {
                 // GPIO header J8 and the PoE header
                 m.boxx(Mat::Plastic, [7.1, 0.96, z], [57.9, 6.04, z + 2.5]);
                 for i in 0..4 {
-                    let q = p(76.0 + (i % 2) as f64 * 2.54, 3.0 + (i / 2) as f64 * 2.54);
+                    let q = p(61.0 + (i % 2) as f64 * 2.54, 8.5 + (i / 2) as f64 * 2.54);
                     m.boxx(Mat::Plastic, [q.x - 1.24, q.y - 1.24, z], [q.x + 1.24, q.y + 1.24, z + 2.5]);
                     m.boxx(Mat::Gold, [q.x - 0.32, q.y - 0.32, z], [q.x + 0.32, q.y + 0.32, z + 8.5]);
                 }
-                // right edge: USB 2.0 stack, USB 3.0 stack (blue tongues), Gigabit Ethernet
-                for (y, tongue) in [(9.0, Mat::Plastic), (27.0, Mat::Rgb(30, 95, 210))] {
+                // right edge: Gigabit Ethernet, USB 3.0 stack (blue tongues), USB 2.0 stack
+                receptacle(&mut m, Receptacle::Rj45, p(87.1, 10.25), p(1.0, 0.0), z);
+                for (y, tongue) in [(29.0, Mat::Rgb(30, 95, 210)), (47.0, Mat::Plastic)] {
                     for level in 0..2 {
                         receptacle(&mut m, Receptacle::TypeA(tongue), p(87.0, y), p(1.0, 0.0), z + level as f64 * 7.8);
                     }
                 }
-                receptacle(&mut m, Receptacle::Rj45, p(87.1, 45.75), p(1.0, 0.0), z);
                 // bottom edge: USB-C power, two micro-HDMI, A/V jack
                 receptacle(&mut m, Receptacle::TypeC, p(11.2, 57.3), p(0.0, 1.0), z);
                 for x in [26.0, 39.5] {

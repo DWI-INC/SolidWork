@@ -15,6 +15,9 @@ use crate::model::features::*;
 use crate::sketch::sketch::Sketch;
 use serde::{Deserialize, Serialize};
 
+mod sbc;
+pub use sbc::Sbc;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum BoardKind {
     ArduinoUno,
@@ -24,6 +27,8 @@ pub enum BoardKind {
     BluePill,
     Nucleo64,
     Pi4,
+    /// every other Raspberry Pi and the Orange Pis
+    Sbc(Sbc),
 }
 
 impl BoardKind {
@@ -37,6 +42,7 @@ impl BoardKind {
             Self::BluePill => "STM32 Blue Pill (F103C8)",
             Self::Nucleo64 => "STM32 Nucleo-64 (F401RE)",
             Self::Pi4 => "Raspberry Pi 4 Model B",
+            Self::Sbc(s) => s.name(),
         }
     }
     pub fn description(self) -> &'static str {
@@ -48,7 +54,18 @@ impl BoardKind {
             Self::BluePill => "STM32F103C8T6, 3,3 V, 53 × 23 mm, LED an PC13 (aktiv LOW)",
             Self::Nucleo64 => "STM32F401RE, 3,3 V, Arduino- und Morpho-Leisten, LD2 an D13, Taster B1 an PC13",
             Self::Pi4 => "BCM2711, 3,3 V GPIO, 85 × 56 mm, 40-polige Leiste, USB-C-Versorgung",
+            Self::Sbc(s) => s.description(),
         }
+    }
+    /// Every board of the library, Raspberry Pis and Orange Pis included.
+    pub fn all() -> Vec<BoardKind> {
+        Self::ALL.iter().copied().chain(Sbc::ALL.iter().map(|&s| Self::Sbc(s))).collect()
+    }
+    pub fn raspberry(self) -> bool {
+        matches!(self, Self::PiPico | Self::Pi4) || matches!(self, Self::Sbc(s) if !s.orange())
+    }
+    pub fn orange(self) -> bool {
+        matches!(self, Self::Sbc(s) if s.orange())
     }
     /// Electrical behaviour of the board in the assembly circuit.
     pub fn spec(self) -> McuSpec {
@@ -109,6 +126,26 @@ impl BoardKind {
                 aliases: &[],
                 max_ma: 20.0,
             },
+            Self::Sbc(s) if s.pico() => {
+                let base = Self::PiPico.spec();
+                if s.wireless_pico() {
+                    McuSpec { internal: &["WL_GPIO0"], led: Some(("LED", "WL_GPIO0", true)), ..base }
+                } else {
+                    base
+                }
+            }
+            Self::Sbc(s) if s.compute_module() => McuSpec {
+                logic: 3.3,
+                usb: &[],
+                inputs: &[("5V", 4.75, REG3)],
+                internal: &[],
+                led: None,
+                power_lamp: None,
+                button: None,
+                aliases: &[],
+                max_ma: 16.0,
+            },
+            Self::Sbc(s) => McuSpec { power_lamp: s.power_lamp(), ..Self::Pi4.spec() },
             Self::Pi4 => McuSpec {
                 logic: 3.3,
                 usb: &[("5V", 5.1), ("3V3", 3.3)],
@@ -130,6 +167,8 @@ impl BoardKind {
             Self::Esp32DevKit | Self::Pi4 => rest("GPIO"),
             Self::PiPico => rest("GP"),
             Self::BluePill => rest("PA") || rest("PB") || rest("PC"),
+            Self::Sbc(s) if s.pico() => rest("GP") || name == "WL_GPIO0",
+            Self::Sbc(_) => rest("GPIO") || rest("PIN"),
         }
     }
     /// Input-only pins (no output driver).
@@ -729,7 +768,11 @@ fn from_module(kind: BoardKind, module: Module) -> DevicePart {
     b.done(Kind::Board(kind))
 }
 
-fn pico() -> DevicePart {
+fn pico_variant(variant: Option<Sbc>) -> DevicePart {
+    let kind = variant.map_or(BoardKind::PiPico, BoardKind::Sbc);
+    let wireless = variant.is_some_and(|s| s.wireless_pico());
+    let rp2350 = matches!(variant, Some(Sbc::Pico2 | Sbc::Pico2W));
+    let debug = matches!(variant, Some(Sbc::PicoH | Sbc::PicoWH));
     let (w, l, t) = (21.0, 51.0, 1.0);
     let left = ["GP0", "GP1", "GND", "GP2", "GP3", "GP4", "GP5", "GND", "GP6", "GP7", "GP8", "GP9", "GND", "GP10", "GP11", "GP12", "GP13", "GND", "GP14", "GP15"];
     let right = ["VBUS", "VSYS", "GND", "3V3_EN", "3V3", "ADC_VREF", "GP28", "GND", "GP27", "GP26", "RUN", "GP22", "GND", "GP21", "GP20", "GP19", "GP18", "GND", "GP17", "GP16"];
@@ -741,7 +784,7 @@ fn pico() -> DevicePart {
     }
     let mounts = [p(4.8, 2.0), p(16.2, 2.0), p(4.8, 49.0), p(16.2, 49.0)];
     let holes: Vec<(P, f64)> = mounts.iter().map(|&q| (q, 2.1)).collect();
-    let mut b = Build::board(BoardKind::PiPico.name(), rect_pts(P::ZERO, p(w, l)), &holes, t, [0.10, 0.46, 0.26]);
+    let mut b = Build::board(kind.name(), rect_pts(P::ZERO, p(w, l)), &holes, t, [0.10, 0.46, 0.26]);
     let mut m = Model::default();
     for &(_, q) in &pins {
         m.boxx(Mat::Gold, [q.x - 0.8, q.y - 0.8, t], [q.x + 0.8, q.y + 0.8, t + 0.03]);
@@ -752,18 +795,41 @@ fn pico() -> DevicePart {
         m.cone(Mat::Rgb(190, 192, 190), [q.x, q.y, t + 0.03], [q.x, q.y, t + 0.5], 0.62, 0.36, 12);
     }
     receptacle(&mut m, Receptacle::MicroB, p(10.5, -1.3), p(0.0, -1.0), t);
-    qfn(&mut m, p(10.5, 26.0), 7.0, 7.0, t, "RP2-B2");
-    qfn(&mut m, p(10.5, 16.0), 4.0, 5.0, t, "W25Q16");
+    qfn(&mut m, p(10.5, 26.0), 7.0, 7.0, t, if rp2350 { "RP2350" } else { "RP2-B2" });
+    qfn(&mut m, p(10.5, 16.0), 4.0, 5.0, t, if rp2350 { "W25Q32" } else { "W25Q16" });
     crystal(&mut m, p(10.5, 34.5), 3.2, 2.5, t, false);
+    if wireless {
+        // CYW43439 under its can, PCB antenna at the far end
+        m.rbox(Mat::Rgb(200, 202, 205), [6.0, 39.0, t], [15.0, 46.0, t + 1.2], 0.4);
+        for i in 0..5 {
+            let x = 5.0 + i as f64 * 2.6;
+            m.boxx(Mat::Gold, [x, 47.0, t], [x + 0.4, 50.2, t + 0.02]);
+            m.boxx(Mat::Gold, [x, if i % 2 == 0 { 49.8 } else { 47.0 }, t], [x + 3.0, if i % 2 == 0 { 50.2 } else { 47.4 }, t + 0.02]);
+        }
+    }
+    if debug {
+        // 3-pin JST-SH debug connector
+        m.boxx(Mat::Rgb(236, 236, 230), [7.0, l - 4.6, t], [14.0, l - 0.6, t + 2.9]);
+        m.boxx(Mat::Rgb(60, 60, 60), [7.6, l - 0.62, t + 0.6], [13.4, l - 0.6, t + 2.3]);
+    }
     m.boxx(Mat::Metal, [8.75, 8.0, t], [12.25, 12.5, t + 1.0]);
     m.boxx(Mat::Rgb(235, 235, 230), [9.5, 8.8, t + 1.0], [11.5, 11.7, t + 1.6]);
-    m.body(BLACK, [7.5, 38.5, t], [13.5, 41.0, t + 1.1], 0.2);
+    if !wireless {
+        m.body(BLACK, [7.5, 38.5, t], [13.5, 41.0, t + 1.1], 0.2);
+    }
     for i in 0..3 {
         let x = 8.0 + i as f64 * 2.5;
         m.boxx(Mat::Gold, [x - 0.6, l - 1.6, t], [x + 0.6, l, t + 0.03]);
     }
-    text(&mut m, SILK, "RASPBERRY PI", p(10.5, 43.4), 0.9, 0.0, t);
-    text(&mut m, SILK, "PICO", p(10.5, 45.6), 1.4, 0.0, t);
+    let title = match variant {
+        Some(Sbc::Pico2) => "PICO 2",
+        Some(Sbc::Pico2W) => "PICO 2 W",
+        Some(Sbc::PicoW | Sbc::PicoWH) => "PICO W",
+        _ => "PICO",
+    };
+    let (ty0, ty1) = if wireless { (31.4, 37.4) } else { (40.8, 43.4) };
+    text(&mut m, SILK, "RASPBERRY PI", p(10.5, ty0), 0.9, 0.0, t);
+    text(&mut m, SILK, title, p(10.5, ty1), 1.4, 0.0, t);
     text(&mut m, SILK, "BOOTSEL", p(10.5, 13.6), 0.7, 0.0, t);
     text(&mut m, SILK, "LED", p(4.3, 7.0), 0.7, 0.0, t);
     for &(n, q) in &pins {
@@ -776,7 +842,7 @@ fn pico() -> DevicePart {
     for &(n, q) in &pins {
         b.pin(n, [q.x, q.y, t + 0.8]);
     }
-    b.done(Kind::Board(BoardKind::PiPico))
+    b.done(Kind::Board(kind))
 }
 
 fn blue_pill() -> DevicePart {
@@ -1100,7 +1166,8 @@ pub fn build(kind: Kind) -> DevicePart {
         Kind::Board(BoardKind::ArduinoUno) => uno(),
         Kind::Board(BoardKind::ArduinoNano) => nano(),
         Kind::Board(BoardKind::Esp32DevKit) => from_module(BoardKind::Esp32DevKit, Module::Esp32),
-        Kind::Board(BoardKind::PiPico) => pico(),
+        Kind::Board(BoardKind::PiPico) => pico_variant(None),
+        Kind::Board(BoardKind::Sbc(s)) => sbc::build(s),
         Kind::Board(BoardKind::BluePill) => blue_pill(),
         Kind::Board(BoardKind::Nucleo64) => nucleo(),
         Kind::Board(BoardKind::Pi4) => from_module(BoardKind::Pi4, Module::Pi4),

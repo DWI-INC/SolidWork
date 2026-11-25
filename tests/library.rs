@@ -166,3 +166,29 @@ fn five_volts_on_a_three_volt_gpio_is_reported() {
     assert!(s.status.iter().any(|(id, t)| *id == 2 && t.starts_with("misst")), "{:?}", s.status);
     assert!(s.warnings.iter().any(|t| t.contains("GPIO19")), "{:?}", s.warnings);
 }
+
+#[test]
+fn every_raspberry_and_orange_pi_builds_with_power_pins_and_gpios() {
+    use freo::pcb::devices::Sbc;
+    let mut names = std::collections::HashSet::new();
+    for s in Sbc::ALL {
+        assert!(names.insert(s.name()), "{s:?} name twice");
+        let kind = BoardKind::Sbc(s);
+        let part = build(Kind::Board(kind));
+        let r = regen::run(&part.data);
+        assert!(r.errors.is_empty(), "{s:?}: {:?}", r.errors);
+        let dev = &part.device;
+        assert!(dev.pin("GND").is_some() || s.pico(), "{s:?} has no GND");
+        assert!(dev.pin_names().iter().any(|n| kind.is_gpio(n)), "{s:?} has no GPIO");
+        for (rail, _) in kind.spec().usb {
+            assert!(dev.pin(rail).is_some(), "{s:?} lacks {rail}");
+        }
+        if let Some(lamp) = kind.spec().power_lamp {
+            assert!(dev.lamps.iter().any(|l| l.name == lamp), "{s:?} lacks lamp {lamp}");
+        }
+        if let Some((lamp, _, _)) = kind.spec().led {
+            assert!(dev.lamps.iter().any(|l| l.name == lamp), "{s:?} lacks lamp {lamp}");
+        }
+    }
+    assert!(Sbc::ALL.iter().filter(|s| s.orange()).count() >= 40);
+}

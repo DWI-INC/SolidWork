@@ -1208,10 +1208,12 @@ impl App {
             }
         }
         let Ok(shot) = std::env::var("FREO_SHOT") else { return };
-        if n == 30 {
+        // FREO_SHOT_FRAME: take the picture later (background work such as library previews)
+        let at = std::env::var("FREO_SHOT_FRAME").ok().and_then(|v| v.parse().ok()).unwrap_or(30);
+        if n == at {
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
         }
-        if n < 200 {
+        if n < at.max(200) {
             ctx.request_repaint();
         }
         let img = ctx.input(|i| i.raw.events.iter().find_map(|e| if let egui::Event::Screenshot { image, .. } = e { Some(image.clone()) } else { None }));

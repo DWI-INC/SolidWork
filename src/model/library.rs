@@ -11,16 +11,20 @@ use crate::sketch::sketch::Sketch;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Category {
     Boards,
+    RaspberryPi,
+    OrangePi,
     Electronics,
     Fasteners,
     Enclosures,
 }
 
 impl Category {
-    pub const ALL: [Category; 4] = [Category::Boards, Category::Electronics, Category::Fasteners, Category::Enclosures];
+    pub const ALL: [Category; 6] = [Category::Boards, Category::RaspberryPi, Category::OrangePi, Category::Electronics, Category::Fasteners, Category::Enclosures];
     pub fn label(self) -> &'static str {
         match self {
             Category::Boards => "Mikrocontroller",
+            Category::RaspberryPi => "Raspberry Pi",
+            Category::OrangePi => "Orange Pi",
             Category::Electronics => "Bauteile",
             Category::Fasteners => "Befestigung",
             Category::Enclosures => "Gehäuse",
@@ -50,7 +54,7 @@ pub struct LibPart {
 
 /// The library with its default sizes and values.
 pub fn catalog() -> Vec<Item> {
-    let mut v: Vec<Item> = BoardKind::ALL.iter().map(|&b| Item::Device(Kind::Board(b))).collect();
+    let mut v: Vec<Item> = BoardKind::all().into_iter().map(|b| Item::Device(Kind::Board(b))).collect();
     v.extend(LedColor::ALL.iter().map(|&c| Item::Device(Kind::Led(c))));
     v.extend([
         Item::Device(Kind::Resistor(220)),
@@ -74,6 +78,8 @@ pub fn catalog() -> Vec<Item> {
 impl Item {
     pub fn category(self) -> Category {
         match self {
+            Item::Device(Kind::Board(b)) if b.raspberry() => Category::RaspberryPi,
+            Item::Device(Kind::Board(b)) if b.orange() => Category::OrangePi,
             Item::Device(Kind::Board(_)) => Category::Boards,
             Item::Device(_) => Category::Electronics,
             Item::Nut(_) | Item::Standoff(_) | Item::Screw => Category::Fasteners,

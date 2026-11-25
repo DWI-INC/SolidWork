@@ -391,6 +391,14 @@ pub enum Receptacle {
     MicroHdmi,
     Rj45,
     Barrel,
+    Hdmi,
+    MiniHdmi,
+    /// 3,5-mm audio jack: the body ends at `at`, the nozzle sticks out
+    Audio,
+    /// yellow RCA (composite video) jack, nozzle out of `at`
+    Rca,
+    /// small 4,0/1,7-mm DC jack
+    DcSmall,
 }
 
 const CAVITY: Mat = Mat::Rgb(18, 18, 20);
@@ -400,11 +408,13 @@ const INSERT_WHITE: Mat = Mat::Rgb(236, 236, 230);
 /// horizontal), standing on the board surface `z`. Returns the mouth's height above `z`.
 pub fn receptacle(m: &mut Model, kind: Receptacle, at: P, d: P, z: f64) -> f64 {
     match kind {
-        Receptacle::MicroB | Receptacle::MiniB | Receptacle::TypeC | Receptacle::MicroHdmi => {
+        Receptacle::MicroB | Receptacle::MiniB | Receptacle::TypeC | Receptacle::MicroHdmi | Receptacle::MiniHdmi | Receptacle::Hdmi => {
             let (w, h, r, depth, tongue) = match kind {
                 Receptacle::MicroB => (7.5, 2.6, 0.55, 5.0, (3.0, 0.15, 0.6)),
                 Receptacle::MiniB => (7.7, 3.9, 0.5, 9.2, (2.7, 0.1, 0.65)),
                 Receptacle::TypeC => (8.94, 3.26, 1.55, 7.35, (3.3, -0.33, 0.33)),
+                Receptacle::MiniHdmi => (11.2, 3.5, 0.5, 7.5, (4.2, -0.3, 0.3)),
+                Receptacle::Hdmi => (15.0, 6.0, 0.6, 11.5, (5.6, -0.6, 0.5)),
                 _ => (7.2, 3.4, 0.5, 7.5, (2.5, -0.3, 0.3)),
             };
             let zc = z + h / 2.0;
@@ -458,6 +468,37 @@ pub fn receptacle(m: &mut Model, kind: Receptacle, at: P, d: P, z: f64) -> f64 {
                 m.obox(c, at, d, (-0.36, -0.3), (v - 1.0, v + 1.0), (zc + h / 2.0 - 2.4, zc + h / 2.0 - 1.4));
             }
             h
+        }
+        Receptacle::Audio => {
+            let zc = z + 3.0;
+            m.obox(Mat::Plastic, at, d, (-12.0, 0.0), (-3.0, 3.0), (z, z + 5.9));
+            let tip = at + d * 2.3;
+            m.cyl(Mat::Plastic, [at.x, at.y, zc], [tip.x, tip.y, zc], 3.0, 32);
+            let end = at + d * 2.32;
+            m.cyl(CAVITY, [tip.x, tip.y, zc], [end.x, end.y, zc], 1.8, 24);
+            5.9
+        }
+        Receptacle::Rca => {
+            let zc = z + 5.0;
+            m.obox(Mat::Rgb(235, 200, 40), at, d, (-10.0, 0.0), (-5.0, 5.0), (z, z + 10.0));
+            let tip = at + d * 5.0;
+            m.cyl(Mat::Metal, [at.x, at.y, zc], [tip.x, tip.y, zc], 4.2, 32);
+            let ins = at + d * 5.02;
+            m.cyl(Mat::Rgb(235, 200, 40), [tip.x, tip.y, zc], [ins.x, ins.y, zc], 3.6, 32);
+            let hole = at + d * 5.04;
+            m.cyl(CAVITY, [ins.x, ins.y, zc], [hole.x, hole.y, zc], 1.2, 16);
+            10.0
+        }
+        Receptacle::DcSmall => {
+            let zc = z + 3.0;
+            m.obox(Mat::Plastic, at, d, (-9.0, 0.0), (-3.2, 3.2), (z, z + 6.0));
+            let face = |u: f64| -> V3 {
+                let q = at + d * u;
+                [q.x, q.y, zc]
+            };
+            m.cyl(CAVITY, face(0.0), face(0.02), 2.0, 24);
+            m.cyl(Mat::Metal, face(0.02), face(0.04), 0.65, 12);
+            6.0
         }
         Receptacle::Barrel => {
             let (w, h, depth) = (9.0, 11.0, 14.0);
