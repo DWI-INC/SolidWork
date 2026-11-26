@@ -806,7 +806,9 @@ impl App {
             }
         });
         group(ui, "Anwendungen", |ui| {
-            large(ui, Icon::Moldbase, "Expert\nMoldbase", false, false);
+            if large(ui, Icon::Moldbase, "Expert\nMoldbase", !self.in_asm() && !self.result.topo.polys.is_empty(), self.apps.base_open).clicked() {
+                self.open_moldbase();
+            }
         });
     }
 
@@ -1526,29 +1528,7 @@ impl App {
     }
 
     pub fn apps_ribbon(&mut self, ui: &mut egui::Ui) {
-        group(ui, "Konstruktion", |ui| {
-            large(ui, Icon::Weld, "Schweißen", false, false);
-            large(ui, Icon::Mold, "Spritzguss/\nGuss", false, false);
-            large(ui, Icon::Moldbase, "Expert\nMoldbase", false, false);
-            large(ui, Icon::GenDesign, "Generatives\nDesign", false, false);
-        });
-        group(ui, "Simulation", |ui| {
-            large(ui, Icon::Simulate, "Ansys\nSimulation", false, false);
-            large(ui, Icon::Simulate, "Simulate", false, false);
-            large(ui, Icon::SimResults, "Simulate\nErgebnisse", false, false);
-            large(ui, Icon::Flow, "Flow\nAnalysis", false, false);
-            large(ui, Icon::MoldFlow, "Spritzgussanalyse", false, false);
-        });
-        group(ui, "Berechnung", |ui| {
-            split(ui, Icon::Mathcad, "Mathcad", false, false);
-        });
-        group(ui, "GD&T", |ui| {
-            large(ui, Icon::GdtAdvisor, "GD&T\nAdvisor", false, false);
-            large(ui, Icon::EzTol, "EZ Tolerance\nAnalysis", false, false);
-        });
-        group(ui, "Rendern", |ui| {
-            large(ui, Icon::Render, "Render\nStudio", false, false);
-        });
+        self.apps_ribbon_ui(ui);
     }
 
     fn htl_open_group(&mut self, ui: &mut egui::Ui) {

@@ -16,8 +16,8 @@ use super::poly::{self, Pt};
 pub struct Advice {
     /// starting adjustment (mm) relative to an offset that is right for PLA on a smooth plate
     pub adjust: f64,
-    /// why that adjustment
-    pub reasons: Vec<String>,
+    /// why that adjustment, each with its share (mm)
+    pub reasons: Vec<(String, f64)>,
     /// further hints for this printer, plate and part
     pub tips: Vec<String>,
     /// how to find the base offset on this firmware, step by step
@@ -81,15 +81,15 @@ pub fn advise(s: &Settings, plan: Option<&Plan>) -> Advice {
     let mut a = Advice::default();
     let (dm, why) = material_adjust(f.material);
     if !why.is_empty() {
-        a.reasons.push(format!("{} ({:+.2} mm)", why, dm));
+        a.reasons.push((why.to_string(), dm));
     }
     let (dp, why) = plate_adjust(p.plate, f.material);
     if let Some(w) = why {
-        a.reasons.push(if dp.abs() > 1e-9 { format!("{} ({:+.2} mm)", w, dp) } else { w.to_string() });
+        a.reasons.push((w.to_string(), dp));
     }
     a.adjust = ((dm + dp) * 1000.0).round() / 1000.0;
     if a.reasons.is_empty() {
-        a.reasons.push(format!("{} auf {}: kein Ausgleich nötig – das für PLA eingestellte Offset passt.", f.material.code(), p.plate.name()));
+        a.reasons.push((format!("{} auf {}: kein Ausgleich nötig – das für PLA eingestellte Offset passt.", f.material.code(), p.plate.name()), 0.0));
     }
     // squish of the first layer
     a.squish = q.first_layer_width / q.first_layer_height.max(1e-3);

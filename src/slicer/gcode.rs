@@ -72,6 +72,10 @@ pub struct Stats {
     pub cost: f64,
     pub layers: usize,
     pub max_z: f64,
+    /// expected standstill for pauses and filament changes (s), part of `time`
+    pub pause_time: f64,
+    /// number of pauses and filament changes in the G-code
+    pub pauses: usize,
 }
 
 pub struct Output {
@@ -429,6 +433,71 @@ fn b64(data: &[u8]) -> String {
     out
 }
 
+/// Firmware command that pauses the print until the user resumes it.
+pub fn pause_command(fl: Flavor) -> &'static str {
+    match fl {
+        Flavor::Marlin => "M601",
+        Flavor::Klipper => "PAUSE",
+        Flavor::RepRapFirmware => "M226",
+        Flavor::Bambu => "M400 U1",
+    }
+}
+
+/// Firmware command for a filament change (unload, wait, load, purge). Klipper has no M600 of
+/// its own, so it pauses; Bambu printers without AMS pause too.
+pub fn change_command(fl: Flavor) -> &'static str {
+    match fl {
+        Flavor::Marlin | Flavor::RepRapFirmware => "M600",
+        Flavor::Klipper => "PAUSE",
+        Flavor::Bambu => "M400 U1",
+    }
+}
+
+/// The printer's own pause / change G-code (rendered with the layer's placeholders), or the
+/// firmware's usual command when none is set.
+fn event_command(custom: &str, dflt: &str, v: &Vars, li: usize, z: f64, warnings: &mut Vec<String>) -> String {
+    if custom.trim().is_empty() {
+        return dflt.to_string();
+    }
+    let mut lv = v.clone();
+    lv.insert("layer_num".into(), Val::Num(li as f64));
+    lv.insert("layer_z".into(), Val::Num(z));
+    let (txt, errs) = template::render(custom, &lv);
+    warnings.extend(errs.into_iter().map(|e| format!("Pausen-G-Code: {}", e)));
+    txt.trim_end().to_string()
+}
+
+/// Text for M117: ASCII only, one line, no comment characters.
+fn display_text(s: &str) -> String {
+    let mut o = String::new();
+    for ch in s.chars() {
+        match ch {
+            'ä' => o.push_str("ae"),
+            'ö' => o.push_str("oe"),
+            'ü' => o.push_str("ue"),
+            'Ä' => o.push_str("Ae"),
+            'Ö' => o.push_str("Oe"),
+            'Ü' => o.push_str("Ue"),
+            'ß' => o.push_str("ss"),
+            ';' | '\n' | '\r' => o.push(' '),
+            c if c.is_ascii() && !c.is_ascii_control() => o.push(c),
+            _ => {}
+        }
+    }
+    o.trim().chars().take(40).collect()
+}
+
+/// Where the head waits during a pause: front left of the bed, out of the way of the part.
+fn park_xy(p: &Printer) -> [f64; 2] {
+    match p.shape {
+        BedShape::Rect => [10.0_f64.min(p.bed_x / 2.0), 10.0_f64.min(p.bed_y / 2.0)],
+        BedShape::Round => [p.bed_x / 2.0, p.bed_x / 2.0 * 0.15],
+    }
+}
+
+/// Height the nozzle is lifted by before it parks for a pause.
+pub const PAUSE_LIFT: f64 = 10.0;
+
 /// Builds the G-code for a plan. `thumb`: PNG to embed (or None).
 pub fn write(plan: &Plan, s: &Settings, thumb: Option<(usize, Vec<u8>)>, now: &str) -> Output {
     let (p, f, q) = (&s.printer, &s.filament, &s.process);
@@ -444,6 +513,26 @@ pub fn write(plan: &Plan, s: &Settings, thumb: Option<(usize, Vec<u8>)>, now: &s
     let mut layer_ops: Vec<Vec<Op>> = Vec::with_capacity(plan.layers.len());
     let mut fan_layer: Vec<f64> = vec![];
     let mut prev_z = 0.0;
+    let mut by_layer: BTreeMap<usize, Vec<&LayerEvent>> = BTreeMap::new();
+    let mut pause_before = vec![0.0f64; plan.layers.len()];
+    let mut pauses = 0usize;
+    for e in &s.events {
+        if e.layer == 0 || e.layer >= plan.layers.len() {
+            warnings.push(format!("{} vor Schicht {}: die Schicht gibt es nicht (2 bis {}), er wird ausgelassen.", e.kind.name(), e.layer + 1, plan.layers.len()));
+            continue;
+        }
+        by_layer.entry(e.layer).or_default().push(e);
+    }
+    let has = |k: EventKind| s.events.iter().any(|e| e.kind == k);
+    if matches!(p.flavor, Flavor::Marlin) && p.pause_gcode.trim().is_empty() && has(EventKind::Pause) {
+        warnings.push("Marlin: die Pause wird als M601 geschrieben (braucht PARK_HEAD_ON_PAUSE). Hält der Drucker nicht an: Drucker bearbeiten → Pause, z. B. M0.".into());
+    }
+    if matches!(p.flavor, Flavor::Bambu) && p.change_gcode.trim().is_empty() && has(EventKind::FilamentChange) {
+        warnings.push("Bambu Lab: der Filamentwechsel wird als Pause geschrieben – Filament am Drucker wechseln und fortsetzen.".into());
+    }
+    if matches!(p.flavor, Flavor::Klipper) && p.change_gcode.trim().is_empty() && has(EventKind::FilamentChange) {
+        warnings.push("Klipper: der Filamentwechsel wird als PAUSE geschrieben – Filament tauschen, dann RESUME.".into());
+    }
     for (li, layer) in plan.layers.iter().enumerate() {
         let mut ops: Vec<Op> = vec![];
         let first = li == 0;
@@ -468,6 +557,56 @@ pub fn write(plan: &Plan, s: &Settings, thumb: Option<(usize, Vec<u8>)>, now: &s
             if (f.bed_temp - f.bed_temp_first).abs() > 0.1 {
                 ops.push(Op::Raw(format!("M140 S{}", template::fmt_num(f.bed_temp))));
             }
+        }
+        // filament change / pause before this layer: retract, lift, park, wait, come back
+        if let Some(evs) = by_layer.get(&li) {
+            let back = w.pos;
+            w.retract(&mut ops, false);
+            let lift = (back[2] + PAUSE_LIFT).min(p.height.max(back[2]));
+            ops.push(Op::Travel([back[0], back[1], lift], p.max_z_speed));
+            let park = park_xy(p);
+            ops.push(Op::Travel([park[0], park[1], lift], q.travel_speed));
+            for e in evs {
+                let note = display_text(&e.note);
+                let msg = |dflt: &str| if note.is_empty() { dflt.to_string() } else { note.clone() };
+                match e.kind {
+                    EventKind::FilamentChange => {
+                        ops.push(Op::Comment(format!(";COLOR_CHANGE,T0,#{:02X}{:02X}{:02X}", e.color[0], e.color[1], e.color[2])));
+                        if !matches!(p.flavor, Flavor::Bambu) {
+                            ops.push(Op::Raw(format!("M117 {}", msg("Filament wechseln"))));
+                        }
+                        ops.push(Op::Raw(event_command(&p.change_gcode, change_command(p.flavor), &v, li, layer.z, &mut warnings)));
+                    }
+                    EventKind::Pause => {
+                        ops.push(Op::Comment(";PAUSE_PRINT".into()));
+                        if !matches!(p.flavor, Flavor::Bambu) {
+                            ops.push(Op::Raw(format!("M117 {}", msg("Pause - Teil einlegen"))));
+                        }
+                        ops.push(Op::Raw(event_command(&p.pause_gcode, pause_command(p.flavor), &v, li, layer.z, &mut warnings)));
+                    }
+                    EventKind::Custom => {
+                        ops.push(Op::Comment(";CUSTOM_GCODE".into()));
+                        let mut lv = v.clone();
+                        lv.insert("layer_num".into(), Val::Num(li as f64));
+                        lv.insert("layer_z".into(), Val::Num(layer.z));
+                        let (txt, errs) = template::render(&e.gcode, &lv);
+                        warnings.extend(errs.into_iter().map(|x| format!("Eigener G-Code vor Schicht {}: {}", li + 1, x)));
+                        ops.push(Op::Raw(txt.trim_end().to_string()));
+                    }
+                }
+            }
+            // after a pause or a filament change the firmware (or the user loading the new
+            // filament) leaves the nozzle primed: pull back again so the way back does not ooze
+            // and the unretract before the next line does not leave a blob
+            if evs.iter().any(|e| e.kind != EventKind::Custom) && w.retracted > 0.0 {
+                w.retracted = 0.0;
+                w.retract(&mut ops, false);
+            }
+            pause_before[li] = evs.iter().map(|e| e.minutes.max(0.0) * 60.0).sum();
+            pauses += evs.iter().filter(|e| e.kind != EventKind::Custom).count();
+            ops.push(Op::Travel([back[0], back[1], lift], q.travel_speed));
+            ops.push(Op::Travel(back, p.max_z_speed));
+            w.pos = back;
         }
         // layer change
         if p.retract_on_layer_change && li > 0 {
@@ -764,13 +903,20 @@ pub fn write(plan: &Plan, s: &Settings, thumb: Option<(usize, Vec<u8>)>, now: &s
     // ---- time ----
     let t = estimate(&blocks, scv);
     let mut layer_time = vec![0.0; plan.layers.len()];
+    // standstill before each layer, summed up to and including it
+    let mut waited = vec![0.0f64; plan.layers.len()];
+    let mut acc_wait = 0.0;
+    for (li, wt) in waited.iter_mut().enumerate() {
+        acc_wait += pause_before[li];
+        *wt = acc_wait;
+    }
     let mut clock = 0.0;
     let mut last_move = 0usize;
     for (bi, tb) in t.iter().enumerate() {
         clock += tb;
         if let Some(mi) = block_move[bi] {
             let m = &mut moves[mi];
-            m.t = clock as f32;
+            m.t = (clock + waited[m.layer as usize]) as f32;
             layer_time[m.layer as usize] += tb;
             match m.kind {
                 Kind::Extrude => *stats.role_time.entry(m.role).or_insert(0.0) += tb,
@@ -788,7 +934,9 @@ pub fn write(plan: &Plan, s: &Settings, thumb: Option<(usize, Vec<u8>)>, now: &s
         tprev = m.t;
     }
     let _ = last_move;
-    stats.time = clock;
+    stats.pause_time = acc_wait;
+    stats.pauses = pauses;
+    stats.time = clock + acc_wait;
     stats.layer_time = layer_time;
     stats.volume_cm3 = stats.filament_mm * fil_area / 1000.0;
     stats.grams = stats.volume_cm3 * f.density;
@@ -806,7 +954,7 @@ pub fn write(plan: &Plan, s: &Settings, thumb: Option<(usize, Vec<u8>)>, now: &s
                     let _ = writeln!(with_progress, "M73 P{} R{}", pct as i64, rem as i64);
                 }
                 if li < stats.layer_time.len() {
-                    done += stats.layer_time[li];
+                    done += stats.layer_time[li] + pause_before[li];
                 }
                 li += 1;
             }
@@ -819,6 +967,9 @@ pub fn write(plan: &Plan, s: &Settings, thumb: Option<(usize, Vec<u8>)>, now: &s
     let _ = writeln!(out, "; generated by SolidWork {} on {}", env!("CARGO_PKG_VERSION"), now);
     let _ = writeln!(out, "; total layer number: {}", plan.layers.len());
     let _ = writeln!(out, "; estimated printing time (normal mode) = {}", fmt_time(stats.time));
+    if stats.pauses > 0 {
+        let _ = writeln!(out, "; pauses and filament changes: {} (counted with {} of standstill)", stats.pauses, fmt_time(stats.pause_time));
+    }
     let _ = writeln!(out, "; filament used [mm] = {:.2}", stats.filament_mm);
     let _ = writeln!(out, "; filament used [cm3] = {:.2}", stats.volume_cm3);
     let _ = writeln!(out, "; filament used [g] = {:.2}", stats.grams);

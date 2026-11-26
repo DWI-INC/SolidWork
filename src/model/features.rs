@@ -1593,6 +1593,9 @@ pub struct ModelData {
     pub sims: Vec<super::sim::Study>,
     #[serde(default)]
     pub sim_active: usize,
+    /// Anwendungen: weld seams, the embedded worksheet, tolerance stack-ups
+    #[serde(default)]
+    pub apps: crate::apps::AppsData,
 }
 
 /// One reference of the component interface and the constraint it takes part in.
@@ -1747,6 +1750,7 @@ impl ModelData {
             interface: vec![],
             sims: vec![],
             sim_active: 0,
+            apps: Default::default(),
         }
     }
 

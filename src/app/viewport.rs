@@ -476,6 +476,7 @@ impl App {
         }
         // Live-Simulation: the result picture replaces the model
         let sim = self.sim_frame(&mut lines);
+        self.apps_lines(&mut lines);
         let a = &self.data.appearance;
         let tint = if self.asm_view().is_some() || !self.data.feature_colors.is_empty() { [1.0, 1.0, 1.0] } else { a.color };
         let section = self.section_plane().map(|(n, w)| [n.x as f32, n.y as f32, n.z as f32, w as f32]);

@@ -401,3 +401,54 @@ fn z_offset_advice_and_test_print() {
     assert!(rb.min[0] > 0.0 && rb.max[0] < s.printer.bed_x);
     assert!(g.starts_with("; SolidWork Z-Offset-Test"));
 }
+
+#[test]
+fn layer_events_pause_and_change_filament() {
+    let mut s = settings();
+    s.printer.flavor = Flavor::Marlin;
+    s.events = vec![
+        LayerEvent { layer: 20, kind: EventKind::Pause, note: "Magnete einlegen".into(), ..Default::default() },
+        LayerEvent { layer: 30, kind: EventKind::FilamentChange, color: [0, 0, 255], ..Default::default() },
+        LayerEvent { layer: 30, kind: EventKind::Custom, gcode: "M118 Schicht [layer_num]".into(), ..Default::default() },
+        LayerEvent { layer: 999, kind: EventKind::Pause, ..Default::default() },
+    ];
+    let r = run(&block(), &s);
+    let g = &r.out.gcode;
+    let layer_of = |needle: &str| {
+        let at = g.find(needle).unwrap_or_else(|| panic!("{} missing", needle));
+        g[..at].matches(";LAYER_CHANGE").count()
+    };
+    // before layer index 20 = after the 20th ;LAYER_CHANGE (that of layer 20 itself), before its moves
+    assert_eq!(layer_of("M601"), 21);
+    assert!(g.contains("M117 Magnete einlegen"));
+    assert_eq!(layer_of("M600"), 31);
+    assert!(g.contains(";COLOR_CHANGE,T0,#0000FF"));
+    assert!(g.contains("M118 Schicht 30"));
+    assert_eq!(g.matches("M601").count(), 1, "the event on a missing layer is left out");
+    assert!(r.out.warnings.iter().any(|w| w.contains("1000")), "{:?}", r.out.warnings);
+    // the part is still printed completely; after a pause or a change the firmware leaves the
+    // nozzle primed, so one retraction per stop is not given back (no blob)
+    let rb = read(g);
+    let plain = run(&block(), &settings());
+    let r_len = s.filament.retract_length.unwrap_or(s.printer.retract_length);
+    let expect = read(&plain.out.gcode).e - 2.0 * r_len;
+    assert!((rb.e - expect).abs() < 0.05, "{} vs {}", rb.e, expect);
+    let after = &g[g.find("M600").unwrap()..];
+    let first_ext = after.lines().position(|l| l.starts_with("G1 X") && l.contains(" E") && !l.contains("E-")).unwrap();
+    let e_between: f64 = after.lines().take(first_ext).filter(|l| l.starts_with("G1 E")).map(|l| l[4..].split_whitespace().next().unwrap().parse::<f64>().unwrap()).sum();
+    assert!(e_between.abs() < 1e-6, "retract after the change is taken back exactly, not more: {}", e_between);
+    // standstill counts in the time: three valid events (pause, change, custom) at 2 min each
+    let st = &r.out.stats;
+    assert_eq!(st.pauses, 2);
+    assert!((st.pause_time - 360.0).abs() < 1e-6, "{}", st.pause_time);
+    assert!(st.time > plain.out.stats.time + 360.0);
+    assert!(g.contains("; pauses and filament changes: 2"));
+    assert!(r.out.moves.last().unwrap().t as f64 > plain.out.moves.last().unwrap().t as f64 + 359.0);
+    // the printer's own pause command replaces M601
+    let mut s2 = s.clone();
+    s2.printer.pause_gcode = "M0 Pause [layer_num]".into();
+    let g2 = run(&block(), &s2).out.gcode;
+    assert!(g2.contains("M0 Pause 20") && !g2.contains("M601"));
+    assert_eq!(s.layer_colors(50)[29], s.filament.color);
+    assert_eq!(s.layer_colors(50)[30], [0, 0, 255]);
+}

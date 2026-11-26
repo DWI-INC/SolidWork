@@ -1,6 +1,6 @@
 [package]
 name = "solidwork"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 description = "Creo-style parametric 3D CAD for macOS, written in Rust"
 license = "MIT"
@@ -32,6 +32,10 @@ winresource = "0.1"
 # local time for file dates (the offset from UTC, with daylight saving)
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# Printables inside the 3D-Druck tab: the system web view (WebKit on macOS, WebView2 on Windows)
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+wry = { version = "0.57", default-features = false }
 
 # Linux needs a windowing backend; macOS uses AppKit without extra features
 [target.'cfg(target_os = "linux")'.dependencies]

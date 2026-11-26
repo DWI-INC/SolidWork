@@ -210,7 +210,7 @@ const AXES: [(&str, V3); 6] = [("+X", V3::X), ("-X", V3::NEG_X), ("+Y", V3::Y), 
 
 impl App {
     /// Paints polygons of the displayed model: `bins[i]` is the legend entry of polygon `i` (None: not painted).
-    fn paint(&mut self, title: &str, legend: Vec<(String, [f32; 4])>, polys: &[CPolygon], bins: &[Option<usize>]) {
+    pub(super) fn paint(&mut self, title: &str, legend: Vec<(String, [f32; 4])>, polys: &[CPolygon], bins: &[Option<usize>]) {
         let mut tris: Vec<(Vec<f32>, [f32; 4])> = legend.iter().map(|l| (vec![], l.1)).collect();
         for (p, b) in polys.iter().zip(bins) {
             let Some(b) = b.filter(|b| *b < tris.len()) else { continue };

@@ -322,7 +322,7 @@ impl App {
         try_plane(n).or_else(|| try_plane(self.camera.back())).unwrap_or(anchor)
     }
 
-    fn annot_plane_name(&self) -> String {
+    pub(super) fn annot_plane_name(&self) -> String {
         self.creo.annot.list.get(self.creo.annot.active).map(|p| p.name.clone()).unwrap_or_default()
     }
 

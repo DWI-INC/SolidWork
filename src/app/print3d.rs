@@ -5,7 +5,7 @@
 
 use super::icons::{self, Icon};
 use super::print_gl::{Beads, Colors, Frame as GlFrame, PlateRenderer, Scene};
-use super::ribbon::{drop_menu, group, large, menu_row, small, stack, theme::*, tiny};
+use super::ribbon::{drop_menu, group, large, menu_row, small, split, stack, theme::*, tiny};
 use super::*;
 use crate::slicer::config::*;
 use crate::slicer::gcode::{self, Kind};
@@ -158,6 +158,23 @@ pub struct PrintUi {
     pub zoff_open: bool,
     /// "Automatisch" was pressed: decide about support once the slice is back
     auto_support: bool,
+    /// the layer event being set up in the panel (its `layer` is unused)
+    pub ev_draft: LayerEvent,
+    /// layers typed for it, 1-based ("12, 30-32")
+    pub ev_layers: String,
+    pub ev_error: Option<String>,
+    /// re-slice after a layer event change: keep the slider where it is
+    keep_view: bool,
+    /// search text of the settings panel
+    pub search: String,
+    /// Printables shown over the viewport
+    pub web_open: bool,
+    pub web: Option<super::webview::Web>,
+    /// where the web view goes this frame (egui points)
+    web_rect: Option<Rect>,
+    /// downloaded model files (newest last), offered for import
+    pub web_files: Vec<std::path::PathBuf>,
+    pub web_status: String,
 }
 
 impl Default for PrintUi {
@@ -202,6 +219,16 @@ impl Default for PrintUi {
             net_status: None,
             zoff_open: false,
             auto_support: false,
+            ev_draft: LayerEvent { color: [40, 90, 220], ..Default::default() },
+            ev_layers: String::new(),
+            ev_error: None,
+            keep_view: false,
+            search: String::new(),
+            web_open: false,
+            web: None,
+            web_rect: None,
+            web_files: vec![],
+            web_status: String::new(),
         }
     }
 }
@@ -218,7 +245,9 @@ struct Saved {
 impl PrintUi {
     /// Settings kept between sessions.
     pub fn to_json(&self) -> String {
-        serde_json::to_string(&Saved { settings: self.settings.clone(), quality: self.quality, user_printers: self.user_printers.clone(), net: self.net.clone() }).unwrap_or_default()
+        let mut settings = self.settings.clone();
+        settings.events.clear();
+        serde_json::to_string(&Saved { settings, quality: self.quality, user_printers: self.user_printers.clone(), net: self.net.clone() }).unwrap_or_default()
     }
     pub fn load_json(&mut self, s: &str) {
         if let Ok(v) = serde_json::from_str::<Saved>(s) {
@@ -407,10 +436,20 @@ fn build_colors(r: &Ready, mode: ColorMode, hidden: &HashSet<Role>, fil: [u8; 3]
     let (lo, hi) = value_range(mode, r);
     let span = (hi - lo).max(1e-6);
     let mut bead = Vec::with_capacity(r.beads.point_move.len() * 16);
+    // filament colour per layer after the filament changes
+    let mut layer_fil = r.settings.layer_colors(r.sliced.plan.layers.len());
+    let base = r.settings.filament.color;
+    for c in layer_fil.iter_mut() {
+        if *c == base {
+            *c = fil;
+        } else {
+            break;
+        }
+    }
     for &mi in &r.beads.point_move {
         let m = &moves[mi as usize];
         let c = match mode {
-            ColorMode::Realistic => fil,
+            ColorMode::Realistic => layer_fil.get(m.layer as usize).copied().unwrap_or(fil),
             ColorMode::Feature => m.role.color(),
             _ => ramp_u8((value(mode, m, r) - lo) / span),
         };
@@ -446,21 +485,145 @@ fn push_line(v: &mut Vec<f32>, a: [f32; 3], b: [f32; 3], c: [f32; 4]) {
     v.extend_from_slice(&c);
 }
 
+// ------------------------------------------------------------------ settings rows
+//
+// Every setting is one row of the same height: the name on the left, the control right-aligned
+// in a common column. With a search text, rows (and their section headers) that do not match
+// are left out, so the same code draws the normal tabs and the search results.
+
+const ROW_H: f32 = 28.0;
+const ROW_PAD: f32 = 8.0;
+const CTRL_H: f32 = 24.0;
+const SECTION_TEXT: Color32 = Color32::from_rgb(92, 98, 106);
+
+#[derive(Default)]
+struct Filter {
+    /// lower-case search text; empty = show everything
+    q: String,
+    /// tab the rows belong to (shown in the result headers)
+    group: &'static str,
+    /// section whose header is drawn before its first matching row
+    pending: Option<String>,
+    /// the section name itself matches: show all its rows
+    section_hit: bool,
+    hits: usize,
+}
+
+thread_local! {
+    static FILTER: std::cell::RefCell<Filter> = std::cell::RefCell::new(Filter::default());
+}
+
+fn searching() -> bool {
+    FILTER.with(|f| !f.borrow().q.is_empty())
+}
+
+fn search_begin(q: &str) {
+    FILTER.with(|f| *f.borrow_mut() = Filter { q: q.trim().to_lowercase(), ..Default::default() });
+}
+
+fn search_group(g: &'static str) {
+    FILTER.with(|f| {
+        let mut f = f.borrow_mut();
+        f.group = g;
+        f.pending = None;
+        f.section_hit = false;
+    });
+}
+
+fn search_hits() -> usize {
+    FILTER.with(|f| f.borrow().hits)
+}
+
+fn search_end() {
+    search_begin("");
+}
+
+/// Matches the search text (every word somewhere in the text).
+fn matches(q: &str, text: &str) -> bool {
+    let t = text.to_lowercase();
+    q.split_whitespace().all(|w| t.contains(w))
+}
+
+fn draw_section(ui: &mut egui::Ui, title: &str) {
+    ui.add_space(10.0);
+    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 20.0), Sense::hover());
+    let p = ui.painter();
+    let g = p.layout_no_wrap(title.to_uppercase(), FontId::proportional(11.5), SECTION_TEXT);
+    let tw = g.size().x;
+    p.galley(pos2(r.left() + ROW_PAD, r.center().y - g.size().y / 2.0), g, SECTION_TEXT);
+    p.line_segment([pos2(r.left() + ROW_PAD + tw + 8.0, r.center().y), pos2(r.right() - ROW_PAD, r.center().y)], Stroke::new(1.0_f32, Color32::from_rgb(222, 226, 230)));
+    ui.add_space(2.0);
+}
+
+/// Section header; while searching it waits for the first matching row.
+fn section(ui: &mut egui::Ui, title: &str) {
+    let pending = FILTER.with(|f| {
+        let mut f = f.borrow_mut();
+        if f.q.is_empty() {
+            return false;
+        }
+        f.section_hit = matches(&f.q, title) || matches(&f.q, f.group);
+        f.pending = Some(format!("{} · {}", f.group, title));
+        true
+    });
+    if !pending {
+        draw_section(ui, title);
+    }
+}
+
+/// Whether a row with this label is shown; draws a waiting section header first.
+fn row_visible(ui: &mut egui::Ui, label: &str) -> bool {
+    let head = FILTER.with(|f| {
+        let mut f = f.borrow_mut();
+        if f.q.is_empty() {
+            return Some(None);
+        }
+        if !(f.section_hit || matches(&f.q, label)) {
+            return None;
+        }
+        f.hits += 1;
+        Some(f.pending.take())
+    });
+    match head {
+        None => false,
+        Some(h) => {
+            if let Some(h) = h {
+                draw_section(ui, &h);
+            }
+            true
+        }
+    }
+}
+
+/// One settings row: `label` left, the control (`cw` wide) right-aligned; true when changed.
+fn row(ui: &mut egui::Ui, label: &str, cw: f32, add: impl FnOnce(&mut egui::Ui) -> bool) -> bool {
+    if !row_visible(ui, label) {
+        return false;
+    }
+    let bg = ui.painter().add(egui::Shape::Noop);
+    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::hover());
+    if ui.rect_contains_pointer(r) {
+        ui.painter().set(bg, egui::Shape::rect_filled(r, 3.0, Color32::from_rgb(241, 245, 249)));
+    }
+    let cr = Rect::from_min_max(pos2(r.right() - ROW_PAD - cw, r.center().y - CTRL_H / 2.0), pos2(r.right() - ROW_PAD, r.center().y + CTRL_H / 2.0));
+    let lr = Rect::from_min_max(pos2(r.left() + ROW_PAD, r.top()), pos2(cr.left() - 8.0, r.bottom()));
+    let g = ui.painter().layout_no_wrap(label.to_string(), FontId::proportional(13.0), TEXT);
+    let cut = g.size().x > lr.width();
+    ui.painter().with_clip_rect(lr).galley(pos2(lr.left(), lr.center().y - g.size().y / 2.0), g, TEXT);
+    if cut {
+        ui.interact(lr, ui.id().with(("pr_row_label", label)), Sense::hover()).on_hover_text(label);
+    }
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(cr).layout(egui::Layout::right_to_left(egui::Align::Center)));
+    add(&mut child)
+}
+
 /// A labelled number in the settings panel; true when changed.
 fn num(ui: &mut egui::Ui, label: &str, v: &mut f64, lo: f64, hi: f64, unit: &str, dec: usize) -> bool {
-    let mut changed = false;
-    ui.horizontal(|ui| {
-        ui.set_min_height(26.0);
-        ui.label(egui::RichText::new(label).size(13.0).color(TEXT));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.add_space(14.0);
-            ui.add_sized(vec2(40.0, 22.0), egui::Label::new(egui::RichText::new(unit).size(12.5).color(DIM_TEXT)));
-            let speed = ((hi - lo) / 400.0).max(10f64.powi(-(dec as i32)));
-            let r = ui.add_sized(vec2(78.0, 22.0), egui::DragValue::new(v).range(lo..=hi).speed(speed).max_decimals(dec).min_decimals(if dec > 0 { 1.min(dec) } else { 0 }));
-            changed = r.changed();
-        });
-    });
-    changed
+    row(ui, label, 124.0, |ui| {
+        ui.add_sized(vec2(42.0, CTRL_H), egui::Label::new(egui::RichText::new(unit).size(12.5).color(Color32::from_rgb(128, 134, 140))));
+        let speed = ((hi - lo) / 400.0).max(10f64.powi(-(dec as i32)));
+        ui.add_sized(vec2(76.0, CTRL_H), egui::DragValue::new(v).range(lo..=hi).speed(speed).max_decimals(dec).min_decimals(if dec > 0 { 1.min(dec) } else { 0 })).changed()
+    })
 }
 
 fn int(ui: &mut egui::Ui, label: &str, v: &mut u32, lo: u32, hi: u32, unit: &str) -> bool {
@@ -481,33 +644,53 @@ fn pct(ui: &mut egui::Ui, label: &str, v: &mut f64, lo: f64, hi: f64) -> bool {
     c
 }
 
+/// An on/off switch, right-aligned like every other control.
 fn flag(ui: &mut egui::Ui, label: &str, v: &mut bool) -> bool {
-    super::dlgkit::chk(ui, v, label, true)
+    row(ui, label, 124.0, |ui| {
+        // right edge in line with the number fields (the unit column stays free)
+        ui.add_space(42.0);
+        let (r, resp) = ui.allocate_exact_size(vec2(36.0, 20.0), Sense::click());
+        let t = ui.ctx().animate_bool(resp.id, *v);
+        let on = Color32::from_rgb(70, 150, 40);
+        let off = Color32::from_rgb(196, 201, 206);
+        let col = Color32::from_rgb(
+            (off.r() as f32 + (on.r() as f32 - off.r() as f32) * t) as u8,
+            (off.g() as f32 + (on.g() as f32 - off.g() as f32) * t) as u8,
+            (off.b() as f32 + (on.b() as f32 - off.b() as f32) * t) as u8,
+        );
+        let p = ui.painter();
+        p.rect_filled(r, 10.0, if ui.is_enabled() { col } else { col.gamma_multiply(0.5) });
+        let cx = r.left() + 10.0 + t * (r.width() - 20.0);
+        p.circle(pos2(cx, r.center().y), 8.0, Color32::WHITE, Stroke::new(0.5_f32, Color32::from_rgb(150, 156, 162)));
+        if resp.clicked() {
+            *v = !*v;
+        }
+        resp.clicked()
+    })
 }
 
 fn pick<T: Copy + PartialEq>(ui: &mut egui::Ui, key: &str, label: &str, v: &mut T, all: &[T], name: fn(&T) -> &'static str) -> bool {
-    let mut changed = false;
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(label).size(13.0).color(TEXT));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.add_space(14.0);
-            let names: Vec<&str> = all.iter().map(name).collect();
-            let mut cur = all.iter().position(|x| x == v).unwrap_or(0);
-            if super::dlgkit::combo(ui, key, 168.0, &mut cur, &names, true, None) {
-                *v = all[cur];
-                changed = true;
-            }
-        });
-    });
-    changed
+    row(ui, label, 180.0, |ui| {
+        let names: Vec<&str> = all.iter().map(name).collect();
+        let mut cur = all.iter().position(|x| x == v).unwrap_or(0);
+        if super::dlgkit::combo_h(ui, key, 180.0, CTRL_H, &mut cur, &names, true, None) {
+            *v = all[cur];
+            true
+        } else {
+            false
+        }
+    })
 }
 
-fn section(ui: &mut egui::Ui, title: &str) {
-    ui.add_space(6.0);
-    let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::hover());
-    ui.painter().rect_filled(r, 0.0, Color32::from_rgb(230, 234, 236));
-    ui.painter().text(pos2(r.left() + 6.0, r.center().y), Align2::LEFT_CENTER, title, FontId::proportional(13.0), LABEL);
-    ui.add_space(2.0);
+/// A small grey note under the settings (hidden while searching).
+fn note(ui: &mut egui::Ui, text: &str) {
+    if searching() {
+        return;
+    }
+    ui.horizontal(|ui| {
+        ui.add_space(ROW_PAD);
+        ui.add(egui::Label::new(egui::RichText::new(text).size(11.5).color(Color32::from_rgb(128, 134, 140))).wrap());
+    });
 }
 
 impl App {
@@ -657,9 +840,12 @@ impl App {
                     let auto = std::mem::take(&mut self.print.auto_support);
                     let rep = r.sliced.plan.support.clone();
                     self.say(msg, MsgKind::Success);
-                    self.print.layer_lo = 0;
-                    self.print.layer_hi = usize::MAX;
-                    self.print.cut = usize::MAX;
+                    let keep = std::mem::take(&mut self.print.keep_view) && self.print.ready.as_ref().is_some_and(|o| o.sliced.plan.layers.len() == r.sliced.plan.layers.len());
+                    if !keep {
+                        self.print.layer_lo = 0;
+                        self.print.layer_hi = usize::MAX;
+                        self.print.cut = usize::MAX;
+                    }
                     self.print.ready = Some(Arc::new(r));
                     self.print.ready_key = key;
                     self.print.preview = true;
@@ -685,6 +871,7 @@ impl App {
                 }
                 Err(e) => {
                     self.print.auto_support = false;
+                    self.print.keep_view = false;
                     self.say(format!("3D-Druck: {}", e.lines().next().unwrap_or("")), if e.contains("abgebrochen") { MsgKind::Info } else { MsgKind::Error });
                     self.print.error = Some(e);
                 }
@@ -1033,8 +1220,21 @@ impl App {
                 if large(ui, Icon::Close, "Abbrechen", true, false).clicked() {
                     self.print_cancel();
                 }
-            } else if large(ui, Icon::PrSlice, if fresh { "Erneut\nslicen" } else { "Slicen" }, has_part, false).on_hover_text("Das Teil in Schichten schneiden und die Druckbahnen berechnen").clicked() {
-                self.print_slice();
+            } else {
+                let (top, more) = split(ui, Icon::PrSlice, if fresh { "Erneut\nslicen" } else { "Slicen" }, true, self.print.web_open);
+                if top.on_hover_text("Das Teil in Schichten schneiden und die Druckbahnen berechnen").clicked() && has_part {
+                    self.print.web_open = false;
+                    self.print_slice();
+                }
+                drop_menu(ui, "pr_slice_more", &more, |ui| {
+                    if menu_row(ui, Some(Icon::PrSlice), if fresh { "Erneut slicen" } else { "Slicen" }, "", has_part, false).clicked() {
+                        self.print.web_open = false;
+                        self.print_slice();
+                    }
+                    if menu_row(ui, Some(Icon::Globe), "Modelle herunterladen (Printables)", "", true, self.print.web_open).clicked() {
+                        self.print_open_web();
+                    }
+                });
             }
         });
 
@@ -1125,23 +1325,101 @@ schließen", true, false).on_hover_text("Zurück zu Werkzeuge").clicked() {
         ui.painter().rect_filled(r.expand2(vec2(4.0, 0.0)), 0.0, TITLE_BG);
         icons::paint(ui.painter(), Rect::from_center_size(pos2(r.left() + 16.0, r.center().y), vec2(20.0, 20.0)), Icon::PrPrinter, true);
         ui.painter().text(pos2(r.left() + 34.0, r.center().y), Align2::LEFT_CENTER, "Druckeinstellungen", FontId::proportional(14.0), TEXT);
+        // search over every setting
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.add_space(4.0);
+            let w = ui.available_width() - 8.0;
+            let (fr, _) = ui.allocate_exact_size(vec2(w, 30.0), Sense::hover());
+            ui.painter().rect_filled(fr, 15.0, Color32::WHITE);
+            ui.painter().rect_stroke(fr, 15.0, Stroke::new(1.0_f32, if self.print.search.is_empty() { super::dlgkit::LINE } else { SEL_BORDER }), StrokeKind::Inside);
+            icons::paint(ui.painter(), Rect::from_center_size(pos2(fr.left() + 16.0, fr.center().y), vec2(15.0, 15.0)), Icon::Search, true);
+            let tr = Rect::from_min_max(pos2(fr.left() + 30.0, fr.top() + 3.0), pos2(fr.right() - 28.0, fr.bottom() - 3.0));
+            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(tr).layout(egui::Layout::left_to_right(egui::Align::Center)));
+            child.add_sized(tr.size(), egui::TextEdit::singleline(&mut self.print.search).frame(false).hint_text("Einstellung suchen … (z. B. Rückzug, Brim, Lüfter)").font(FontId::proportional(13.0)).vertical_align(egui::Align::Center));
+            if !self.print.search.is_empty() {
+                let cr = Rect::from_center_size(pos2(fr.right() - 15.0, fr.center().y), vec2(18.0, 18.0));
+                let resp = ui.interact(cr, ui.id().with("pr_search_clear"), Sense::click());
+                ui.painter().circle_filled(cr.center(), 8.0, if resp.hovered() { Color32::from_rgb(150, 156, 162) } else { Color32::from_rgb(190, 195, 200) });
+                ui.painter().text(cr.center(), Align2::CENTER_CENTER, "✕", FontId::proportional(10.0), Color32::WHITE);
+                if resp.on_hover_text("Suche löschen").clicked() {
+                    self.print.search.clear();
+                }
+            }
+        });
+        ui.add_space(2.0);
         let busy = self.print.busy();
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.add_enabled_ui(!busy, |ui| {
-                ui.spacing_mut().item_spacing = vec2(6.0, 3.0);
-                self.print_panel_body(ui);
+                ui.spacing_mut().item_spacing = vec2(6.0, 2.0);
+                if self.print.search.trim().is_empty() {
+                    self.print_panel_body(ui);
+                } else {
+                    self.print_search_results(ui);
+                }
             });
         });
     }
 
+    /// The panel while searching: matching settings of every tab, each under "Tab · Section".
+    fn print_search_results(&mut self, ui: &mut egui::Ui) {
+        let q = self.print.search.clone();
+        search_begin(&q);
+        search_group("Drucker");
+        section(ui, "Druckbett");
+        {
+            let p = &mut self.print.settings.printer;
+            pick(ui, "pr_plate", "Druckplatte", &mut p.plate, &Plate::ALL, |x| x.name());
+        }
+        search_group("Filament");
+        self.print_temps(ui);
+        for (k, name) in TAB_NAMES.iter().enumerate().take(7) {
+            search_group(name);
+            self.print_tab(ui, k);
+        }
+        let hits = search_hits();
+        let ql = q.trim().to_lowercase();
+        let events = ["pause", "filament", "wechsel", "einlegen", "kleben", "magnet", "farbe", "m600"].iter().any(|w| w.contains(&ql) || ql.contains(w));
+        search_end();
+        if events {
+            draw_section(ui, "Pause/Wechsel");
+            ui.horizontal(|ui| {
+                ui.add_space(ROW_PAD);
+                if ui.link("Pausen und Filamentwechsel an Schichten einfügen …").clicked() {
+                    self.print.search.clear();
+                    self.print.panel_tab = 7;
+                }
+            });
+        }
+        if hits == 0 && !events {
+            ui.add_space(24.0);
+            ui.vertical_centered(|ui| {
+                ui.label(egui::RichText::new(format!("Keine Einstellung zu „{}“ gefunden.", q.trim())).size(13.0).color(LABEL));
+            });
+        }
+    }
+
+    /// Nozzle and bed temperatures of the filament.
+    fn print_temps(&mut self, ui: &mut egui::Ui) {
+        section(ui, "Temperatur");
+        let f = &mut self.print.settings.filament;
+        num(ui, "Düse", &mut f.nozzle_temp, 150.0, 450.0, "°C", 0);
+        num(ui, "Düse erste Schicht", &mut f.nozzle_temp_first, 150.0, 450.0, "°C", 0);
+        num(ui, "Druckbett", &mut f.bed_temp, 0.0, 150.0, "°C", 0);
+        num(ui, "Druckbett erste Schicht", &mut f.bed_temp_first, 0.0, 150.0, "°C", 0);
+    }
+
     fn print_panel_body(&mut self, ui: &mut egui::Ui) {
+        let full = ui.available_width() - 2.0 * ROW_PAD;
+        let combo_w = full - 42.0;
+        let indent = |ui: &mut egui::Ui| ui.add_space(ROW_PAD - 6.0);
         // printer
-        section(ui, "Drucker");
+        draw_section(ui, "Drucker");
         let all: Vec<Printer> = self.print.user_printers.iter().cloned().chain(printers::all_printers()).collect();
         let names: Vec<String> = all.iter().map(|p| p.name()).collect();
         let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
         let cur_name = self.print.settings.printer.name();
-        let mut cur = names.iter().position(|n| *n == cur_name).unwrap_or(usize::MAX);
+        let cur = names.iter().position(|n| *n == cur_name).unwrap_or(usize::MAX);
         let mut shown = cur;
         let extra = format!("{} (geändert)", cur_name);
         let mut list = refs.clone();
@@ -1150,12 +1428,11 @@ schließen", true, false).on_hover_text("Zurück zu Werkzeuge").clicked() {
             shown = 0;
         }
         ui.horizontal(|ui| {
+            indent(ui);
             let before = shown;
-            if super::dlgkit::combo(ui, "pr_printer_combo", ui.available_width() - 44.0, &mut shown, &list, true, Some(Icon::PrPrinter)) && shown != before {
+            if super::dlgkit::combo(ui, "pr_printer_combo", combo_w, &mut shown, &list, true, Some(Icon::PrPrinter)) && shown != before {
                 let k = if cur == usize::MAX { shown.wrapping_sub(1) } else { shown };
                 if let Some(p) = all.get(k) {
-                    cur = k;
-                    let _ = cur;
                     self.print_set_printer(p.clone());
                 }
             }
@@ -1165,82 +1442,90 @@ schließen", true, false).on_hover_text("Zurück zu Werkzeuge").clicked() {
         });
         {
             let p = &mut self.print.settings.printer;
-            let mut plate = p.plate;
-            if pick(ui, "pr_plate", "Druckbett", &mut plate, &Plate::ALL, |x| x.name()) {
-                p.plate = plate;
-            }
-            ui.label(egui::RichText::new(format!("Bauraum {:.0} × {:.0} × {:.0} mm · Düse {:.2} mm · {}", p.bed_x, p.bed_y, p.height, p.nozzle, p.flavor.name())).size(12.0).color(DIM_TEXT));
+            pick(ui, "pr_plate", "Druckplatte", &mut p.plate, &Plate::ALL, |x| x.name());
+            let info = format!("{:.0} × {:.0} × {:.0} mm · Düse {:.2} mm · {}", p.bed_x, p.bed_y, p.height, p.nozzle, p.flavor.name());
+            note(ui, &info);
         }
-        // filament
-        section(ui, "Filament");
+        // filament: preset and colour in one row
+        draw_section(ui, "Filament");
         let fils = printers::filament_presets();
         let fnames: Vec<&str> = fils.iter().map(|f| f.name.as_str()).collect();
         let mut fi = fils.iter().position(|f| f.name == self.print.settings.filament.name).unwrap_or(0);
-        if super::dlgkit::combo(ui, "pr_fil_combo", ui.available_width(), &mut fi, &fnames, true, Some(Icon::PrFilament)) {
-            let mut f = fils[fi].clone();
-            f.color = self.print.settings.filament.color;
-            f.diameter = self.print.settings.printer.filament_diameter;
-            self.print.settings.filament = f;
-        }
-        // colour swatches
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = vec2(3.0, 3.0);
-            for (name, c) in printers::COLORS {
-                let (r, resp) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::click());
-                let sel = self.print.settings.filament.color == *c;
-                ui.painter().rect_filled(r.shrink(1.0), 3.0, Color32::from_rgb(c[0], c[1], c[2]));
-                ui.painter().rect_stroke(r.shrink(1.0), 3.0, Stroke::new(if sel { 2.0_f32 } else { 1.0 }, if sel { SEL_BORDER } else { BORDER }), StrokeKind::Inside);
-                if resp.on_hover_text(*name).clicked() {
-                    self.print.settings.filament.color = *c;
-                    self.print.colors = None;
-                    self.print.scene = None;
-                }
+        ui.horizontal(|ui| {
+            indent(ui);
+            if super::dlgkit::combo(ui, "pr_fil_combo", combo_w, &mut fi, &fnames, true, Some(Icon::PrFilament)) {
+                let mut f = fils[fi].clone();
+                f.color = self.print.settings.filament.color;
+                f.diameter = self.print.settings.printer.filament_diameter;
+                self.print.settings.filament = f;
             }
-            let mut c = self.print.settings.filament.color;
-            if ui.color_edit_button_srgb(&mut c).on_hover_text("Eigene Farbe").changed() {
+            if let Some(c) = color_button(ui, "pr_fil_color", self.print.settings.filament.color, "Filamentfarbe") {
                 self.print.settings.filament.color = c;
                 self.print.colors = None;
                 self.print.scene = None;
             }
         });
-        {
-            let f = &mut self.print.settings.filament;
-            num(ui, "Düse", &mut f.nozzle_temp, 150.0, 450.0, "°C", 0);
-            num(ui, "Düse erste Schicht", &mut f.nozzle_temp_first, 150.0, 450.0, "°C", 0);
-            num(ui, "Druckbett", &mut f.bed_temp, 0.0, 150.0, "°C", 0);
-            num(ui, "Druckbett erste Schicht", &mut f.bed_temp_first, 0.0, 150.0, "°C", 0);
-        }
-        // quality preset
-        section(ui, "Druckprofil");
+        self.print_temps(ui);
+        // process
+        draw_section(ui, "Druckprofil");
         let presets = printers::process_presets_for(&self.print.settings.printer);
         let qn: Vec<&str> = presets.iter().map(|q| q.name.as_str()).collect();
         let mut q = self.print.quality.min(qn.len() - 1);
-        if super::dlgkit::combo(ui, "pr_q_combo", ui.available_width(), &mut q, &qn, true, Some(Icon::PrProcess)) {
-            self.print_set_quality(q);
-        }
-        ui.add_space(4.0);
-        // tabs, wrapped in two rows
-        let names = ["Qualität", "Festigkeit", "Geschwindigkeit", "Stützen", "Haftung", "Kühlung", "Weiteres"];
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-            for (k, t) in names.iter().enumerate() {
-                let (r, resp) = ui.allocate_exact_size(vec2(super::dlgkit::tw(ui, t, 13.0) + 18.0, 26.0), Sense::click());
+        ui.horizontal(|ui| {
+            indent(ui);
+            if super::dlgkit::combo(ui, "pr_q_combo", combo_w, &mut q, &qn, true, Some(Icon::PrProcess)) {
+                self.print_set_quality(q);
+            }
+            if super::dlgkit::ibox(ui, Icon::Undo, true, "Profil zurücksetzen (Stützen und Füllung bleiben)").clicked() {
+                self.print_set_quality(q);
+            }
+        });
+        ui.add_space(8.0);
+        // tabs: a segmented control, two even rows
+        ui.horizontal(|ui| {
+            indent(ui);
+            let (area, _) = ui.allocate_exact_size(vec2(full + 12.0 - 12.0, 60.0), Sense::hover());
+            let p = ui.painter().clone();
+            p.rect_filled(area, 6.0, Color32::from_rgb(234, 237, 240));
+            let cw = area.width() / 4.0;
+            for (k, t) in TAB_NAMES.iter().enumerate() {
+                let (row_i, col) = (k / 4, k % 4);
+                let cell = Rect::from_min_size(pos2(area.left() + col as f32 * cw, area.top() + row_i as f32 * 30.0), vec2(cw, 30.0)).shrink(2.0);
+                let resp = ui.interact(cell, ui.id().with(("pr_tab", k)), Sense::click());
                 let sel = self.print.panel_tab == k;
-                ui.painter().rect_filled(r, 0.0, if sel { Color32::from_rgb(250, 250, 250) } else if resp.hovered() { HOVER_BG } else { Color32::from_rgb(234, 237, 239) });
-                ui.painter().rect_stroke(r, 0.0, Stroke::new(1.0_f32, super::dlgkit::LINE), StrokeKind::Inside);
                 if sel {
-                    ui.painter().line_segment([r.left_bottom() + vec2(2.0, -1.0), r.right_bottom() + vec2(-2.0, -1.0)], Stroke::new(2.0_f32, ACCENT));
+                    p.rect_filled(cell, 5.0, Color32::WHITE);
+                    p.rect_stroke(cell, 5.0, Stroke::new(1.0_f32, Color32::from_rgb(208, 213, 218)), StrokeKind::Inside);
+                } else if resp.hovered() {
+                    p.rect_filled(cell, 5.0, Color32::from_rgb(244, 246, 248));
                 }
-                ui.painter().text(r.center(), Align2::CENTER_CENTER, *t, FontId::proportional(13.0), if sel { TEXT } else { LABEL });
+                let g = p.layout_no_wrap(t.to_string(), FontId::proportional(12.5), if sel { TEXT } else { LABEL });
+                let tw = g.size().x;
+                p.with_clip_rect(cell.shrink(2.0)).galley(pos2(cell.center().x - tw.min(cell.width() - 4.0) / 2.0, cell.center().y - g.size().y / 2.0), g, TEXT);
+                if sel {
+                    p.line_segment([pos2(cell.center().x - 10.0, cell.bottom() - 2.0), pos2(cell.center().x + 10.0, cell.bottom() - 2.0)], Stroke::new(2.0_f32, ACCENT));
+                }
                 if resp.clicked() {
                     self.print.panel_tab = k;
                 }
             }
         });
-        ui.add_space(4.0);
+        self.print_tab(ui, self.print.panel_tab);
+        ui.add_space(10.0);
+        let errs = self.print.settings.validate();
+        for e in errs {
+            ui.horizontal(|ui| {
+                ui.add_space(ROW_PAD);
+                ui.add(egui::Label::new(egui::RichText::new(e).size(12.5).color(Color32::from_rgb(200, 40, 30))).wrap());
+            });
+        }
+    }
+
+    /// The settings of one tab (also used, filtered, for the search results).
+    fn print_tab(&mut self, ui: &mut egui::Ui, tab: usize) {
         let n = self.print.settings.printer.nozzle;
         let q = &mut self.print.settings.process;
-        match self.print.panel_tab {
+        match tab {
             0 => {
                 section(ui, "Schichthöhe");
                 num(ui, "Schichthöhe", &mut q.layer_height, 0.04, n * 0.85, "mm", 2);
@@ -1353,11 +1638,9 @@ schließen", true, false).on_hover_text("Zurück zu Werkzeuge").clicked() {
                     num(ui, "Spitzendurchmesser", &mut q.tree_tip_diameter, 0.4, 5.0, "mm", 2);
                     num(ui, "Stammdurchmesser", &mut q.tree_trunk_diameter, 1.0, 30.0, "mm", 1);
                 }
-                if let Some(r) = self.print.ready.as_ref() {
-                    if let Some(m) = support_summary(r) {
-                        ui.add_space(4.0);
-                        ui.label(egui::RichText::new(m).size(12.0).color(DIM_TEXT));
-                    }
+                if let Some(m) = self.print.ready.as_ref().and_then(|r| support_summary(r)) {
+                    ui.add_space(4.0);
+                    note(ui, &m);
                 }
             }
             4 => {
@@ -1390,6 +1673,7 @@ schließen", true, false).on_hover_text("Zurück zu Werkzeuge").clicked() {
                 num(ui, "Preis", &mut f.cost, 0.0, 1000.0, "€/kg", 2);
                 num(ui, "Durchmesser", &mut f.diameter, 1.0, 3.5, "mm", 2);
             }
+            7 => self.print_events_panel(ui),
             _ => {
                 section(ui, "Brücken");
                 pct(ui, "Brückenfluss", &mut q.bridge_flow, 0.5, 1.5);
@@ -1405,11 +1689,333 @@ schließen", true, false).on_hover_text("Zurück zu Werkzeuge").clicked() {
                 num(ui, "Abwischstrecke", &mut p.wipe_distance, 0.0, 10.0, "mm", 1);
             }
         }
-        ui.add_space(10.0);
-        let errs = self.print.settings.validate();
-        for e in errs {
-            ui.label(egui::RichText::new(e).size(12.5).color(Color32::from_rgb(200, 40, 30)));
+    }
+
+    // ------------------------------------------------------------------ Printables
+
+    pub fn print_open_web(&mut self) {
+        self.print.web_open = true;
+        self.print.web_status = "Modell auf Printables suchen, Datei herunterladen – sie wird gleich zum Slicen geladen.".into();
+    }
+
+    /// The toolbar above the web view; the view itself is a native layer placed in `print_web_sync`.
+    fn print_web_viewport(&mut self, ui: &mut egui::Ui) {
+        let full = ui.available_rect_before_wrap();
+        let (rect, _) = ui.allocate_exact_size(full.size(), Sense::hover());
+        let bar = Rect::from_min_max(rect.min, pos2(rect.right(), rect.top() + 40.0));
+        let p = ui.painter_at(rect);
+        p.rect_filled(rect, 0.0, Color32::from_rgb(246, 247, 249));
+        p.rect_filled(bar, 0.0, Color32::from_rgb(236, 239, 242));
+        p.line_segment([bar.left_bottom(), bar.right_bottom()], Stroke::new(1.0_f32, BORDER));
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(bar.shrink2(vec2(8.0, 5.0))).layout(egui::Layout::left_to_right(egui::Align::Center)));
+        let ui = &mut child;
+        ui.spacing_mut().item_spacing = vec2(4.0, 0.0);
+        let nav = |ui: &mut egui::Ui, t: &str, tip: &str| ui.add_sized(vec2(30.0, 28.0), egui::Button::new(egui::RichText::new(t).size(15.0))).on_hover_text(tip).clicked();
+        let (title, loading) = self.print.web.as_ref().and_then(|w| w.shared.lock().ok().map(|s| (s.title.clone(), s.loading))).unwrap_or_default();
+        if nav(ui, "←", "Zurück") {
+            if let Some(w) = &self.print.web {
+                w.back();
+            }
         }
+        if nav(ui, "→", "Vorwärts") {
+            if let Some(w) = &self.print.web {
+                w.forward();
+            }
+        }
+        if nav(ui, if loading { "✕" } else { "⟳" }, "Neu laden") {
+            if let Some(w) = &self.print.web {
+                w.reload();
+            }
+        }
+        if nav(ui, "⌂", "Printables-Startseite") {
+            if let Some(w) = &self.print.web {
+                w.load(super::webview::PRINTABLES);
+            }
+        }
+        ui.add_space(6.0);
+        let mut import = None;
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.add_sized(vec2(96.0, 28.0), egui::Button::new("Schließen")).on_hover_text("Zurück zum Druckbett").clicked() {
+                self.print.web_open = false;
+            }
+            // downloaded models, newest first
+            for f in self.print.web_files.iter().rev().take(4) {
+                let n = f.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                let b = egui::Button::new(egui::RichText::new(format!("⬇ {}", short(&n, 22))).size(12.5)).fill(Color32::from_rgb(222, 240, 214));
+                if ui.add(b).on_hover_text(format!("{} laden und slicen", n)).clicked() {
+                    import = Some(f.clone());
+                }
+            }
+            let shown = if title.is_empty() { "Printables".to_string() } else { title.clone() };
+            let w = ui.available_width();
+            ui.add_sized(vec2(w, 28.0), egui::Label::new(egui::RichText::new(shown).size(13.0).color(TEXT)).truncate());
+        });
+        // status under the bar, behind the view (visible while it loads or without a web view)
+        let body = Rect::from_min_max(pos2(rect.left(), bar.bottom() + 1.0), rect.max);
+        p.text(body.center(), Align2::CENTER_CENTER, &self.print.web_status, FontId::proportional(14.0), Color32::from_rgb(110, 116, 124));
+        self.print.web_rect = Some(body);
+        if let Some(f) = import {
+            self.print_import_model(&f);
+        }
+    }
+
+    /// Every frame (from `update`, which has the window): creates, places or hides the web view
+    /// and picks up finished downloads.
+    pub fn print_web_sync(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+        let want = self.print.web_open && self.tab == Tab::Print && !self.creo.home && self.idea.is_none() && !self.drawing_active();
+        if want && self.print.web.is_none() {
+            let dir = self.work_dir.join("Printables");
+            // FREO_WEB_URL: another start page (tests of the download path)
+            let url = std::env::var("FREO_WEB_URL").unwrap_or_else(|_| super::webview::PRINTABLES.to_string());
+            match super::webview::Web::new(frame, &url, dir) {
+                Ok(w) => self.print.web = Some(w),
+                Err(e) => {
+                    self.print.web_open = false;
+                    self.say(format!("3D-Druck: {}", e), MsgKind::Info);
+                    return;
+                }
+            }
+        }
+        let Some(w) = self.print.web.as_mut() else { return };
+        // native views cover egui: step aside for menus and the slicer's dialogs
+        let covered = ctx.memory(|m| m.any_popup_open()) || self.print.printer_dlg.is_some() || self.print.zoff_open || self.print.net_open || self.print.stats_open;
+        match self.print.web_rect {
+            Some(r) if want && !covered => {
+                let z = ctx.zoom_factor();
+                w.place(r.left() * z, r.top() * z, r.width() * z, r.height() * z);
+            }
+            _ => w.show(false),
+        }
+        let (done, started, failed) = w.poll();
+        for n in started {
+            self.print.web_status = format!("Lade {} herunter …", n);
+            self.say(format!("Printables: lade {} herunter …", n), MsgKind::Info);
+        }
+        for n in failed {
+            self.say(format!("Printables: Download von {} fehlgeschlagen.", n), MsgKind::Error);
+        }
+        let mut fresh = vec![];
+        for f in done {
+            match slicer::modelfile::prepare(&f) {
+                Ok(files) => fresh.extend(files),
+                Err(e) => self.say(format!("Printables: {}", e), MsgKind::Warning),
+            }
+        }
+        if fresh.is_empty() {
+            return;
+        }
+        self.print.web_files.extend(fresh.iter().cloned());
+        if fresh.len() == 1 {
+            self.print_import_model(&fresh[0]);
+        } else {
+            self.print.web_status = format!("{} Modelle heruntergeladen – oben rechts eins zum Slicen wählen.", fresh.len());
+            self.say(format!("Printables: {} Modelle im Archiv – oben rechts eins zum Slicen wählen.", fresh.len()), MsgKind::Info);
+        }
+        ctx.request_repaint();
+    }
+
+    /// Opens a downloaded model as the part, back on the build plate, and slices it.
+    pub fn print_import_model(&mut self, path: &std::path::Path) {
+        if !self.confirm_discard() {
+            return;
+        }
+        self.open_neutral(path);
+        if self.data.features.is_empty() {
+            return;
+        }
+        self.tab = Tab::Print;
+        self.print.open = true;
+        self.print.web_open = false;
+        self.print.placement = Placement::default();
+        self.print.preview = false;
+        self.fit_pending = true;
+        self.print_slice();
+    }
+
+    // ------------------------------------------------------------------ layer events
+
+    /// Layers in the slice, once there is one.
+    fn print_layer_count(&self) -> Option<usize> {
+        self.print.ready.as_ref().map(|r| r.sliced.plan.layers.len())
+    }
+
+    /// Adds the draft event before each of the layers (0-based) and re-slices.
+    fn print_add_events(&mut self, kind: EventKind, layers: &[usize]) {
+        let d = self.print.ev_draft.clone();
+        let mut n = 0;
+        for &l in layers {
+            if l == 0 || self.print.settings.events.iter().any(|e| e.layer == l && e.kind == kind) {
+                continue;
+            }
+            self.print.settings.events.push(LayerEvent { layer: l, kind, ..d.clone() });
+            n += 1;
+        }
+        if n > 0 {
+            let at: Vec<String> = layers.iter().map(|l| (l + 1).to_string()).collect();
+            self.say(format!("3D-Druck: {} vor Schicht {} eingefügt.", kind.name(), at.join(", ")), MsgKind::Info);
+            self.print_events_changed();
+        }
+    }
+
+    fn print_events_changed(&mut self) {
+        self.print.settings.events.sort_by_key(|e| e.layer);
+        if self.print.ready.is_some() && !self.print.busy() {
+            self.print.keep_view = true;
+            self.print_slice();
+        }
+    }
+
+    fn print_events_panel(&mut self, ui: &mut egui::Ui) {
+        let nl = self.print_layer_count();
+        let cur = nl.map(|nl| (self.print.layer_hi.min(nl.saturating_sub(1)), self.print.layer_lo.min(self.print.layer_hi.min(nl.saturating_sub(1)))));
+        section(ui, "Neu einfügen");
+        let mut kind = self.print.ev_draft.kind;
+        if pick(ui, "pr_ev_kind", "Art", &mut kind, &EventKind::ALL, |k| k.name()) {
+            self.print.ev_draft.kind = kind;
+            self.print.ev_draft.minutes = LayerEvent::default_minutes(kind);
+        }
+        let layers = &mut self.print.ev_layers;
+        if row(ui, "Vor Schicht", 180.0, |ui| ui.add_sized(vec2(180.0, CTRL_H), egui::TextEdit::singleline(layers).hint_text("z. B. 12, 30-32").vertical_align(egui::Align::Center)).changed()) {
+            self.print.ev_error = None;
+        }
+        if let Some((hi, lo)) = cur {
+            let mut set = None;
+            row(ui, "Aus der Vorschau", 180.0, |ui| {
+                if lo != hi && ui.add_sized(vec2(88.0, CTRL_H), egui::Button::new(format!("{}, {}", lo + 1, hi + 1))).on_hover_text("Die Schichten an beiden Reglern").clicked() {
+                    set = Some(format!("{}, {}", lo + 1, hi + 1));
+                }
+                if ui.add_sized(vec2(88.0, CTRL_H), egui::Button::new(format!("Schicht {}", hi + 1))).on_hover_text("Die Schicht am oberen Regler").clicked() {
+                    set = Some((hi + 1).to_string());
+                }
+                false
+            });
+            if let Some(t) = set {
+                self.print.ev_layers = t;
+                self.print.ev_error = None;
+            }
+        }
+        match self.print.ev_draft.kind {
+            EventKind::FilamentChange => {
+                let cur_c = self.print.ev_draft.color;
+                let mut picked = None;
+                row(ui, "Neue Farbe", 180.0, |ui| {
+                    picked = color_button(ui, "pr_ev_color", cur_c, "Farbe des neuen Filaments");
+                    false
+                });
+                if let Some(c) = picked {
+                    self.print.ev_draft.color = c;
+                }
+            }
+            EventKind::Custom => {
+                ui.horizontal(|ui| {
+                    ui.add_space(ROW_PAD);
+                    ui.add(egui::TextEdit::multiline(&mut self.print.ev_draft.gcode).code_editor().hint_text("G-Code, z. B. M104 S220 – Platzhalter [layer_num], [layer_z]").desired_rows(3).desired_width(ui.available_width() - ROW_PAD));
+                });
+            }
+            EventKind::Pause => {}
+        }
+        if self.print.ev_draft.kind != EventKind::Custom {
+            let hint = if self.print.ev_draft.kind == EventKind::Pause { "Magnete einlegen" } else { "Filament wechseln" };
+            let note_t = &mut self.print.ev_draft.note;
+            row(ui, "Hinweis am Display", 180.0, |ui| {
+                ui.add_sized(vec2(180.0, CTRL_H), egui::TextEdit::singleline(note_t).hint_text(hint).vertical_align(egui::Align::Center));
+                false
+            });
+        }
+        num(ui, "Geschätzte Dauer", &mut self.print.ev_draft.minutes, 0.0, 600.0, "min", 1);
+        let hint = match self.print.ev_draft.kind {
+            EventKind::FilamentChange => "Der Druck hält vor der Schicht an, fährt zur Seite und wartet. Ab dieser Schicht wird mit dem neuen Filament gedruckt. Den Befehl legt der Drucker fest (Drucker bearbeiten → Pause und Filamentwechsel).",
+            EventKind::Pause => "Für Einlegeteile (Magnete, Muttern, Elektronik) oder zum Einkleben die erste Schicht wählen, die den Hohlraum schließt: der Druck hält davor an, der Hohlraum ist offen.",
+            EventKind::Custom => "Wird vor der Schicht ausgeführt, nachdem der Kopf angehoben und zur Seite gefahren ist.",
+        };
+        note(ui, hint);
+        ui.add_space(6.0);
+        let mut add = false;
+        ui.horizontal(|ui| {
+            ui.add_space(ROW_PAD);
+            add = super::dlgkit::btn(ui, "Einfügen", 120.0, 1);
+        });
+        if add {
+            match parse_layers(&self.print.ev_layers, nl) {
+                Ok(ls) => {
+                    self.print.ev_error = None;
+                    let kind = self.print.ev_draft.kind;
+                    self.print_add_events(kind, &ls);
+                }
+                Err(e) => self.print.ev_error = Some(e),
+            }
+        }
+        if let Some(e) = self.print.ev_error.clone() {
+            ui.horizontal(|ui| {
+                ui.add_space(ROW_PAD);
+                ui.add(egui::Label::new(egui::RichText::new(e).size(12.0).color(Color32::from_rgb(200, 40, 30))).wrap());
+            });
+        }
+        if nl.is_none() {
+            note(ui, "Tipp: nach dem Slicen in der Vorschau den Schichtregler mit der rechten Maustaste anklicken.");
+        }
+        // the list
+        section(ui, &format!("Geplant ({})", self.print.settings.events.len()));
+        if self.print.settings.events.is_empty() {
+            note(ui, "Noch keine Pausen oder Filamentwechsel.");
+            return;
+        }
+        let zs: Vec<f64> = self.print.ready.as_ref().map(|r| r.sliced.plan.layers.iter().map(|l| l.z).collect()).unwrap_or_default();
+        let mut remove = None;
+        let mut show = None;
+        for (i, e) in self.print.settings.events.iter().enumerate() {
+            let bg = ui.painter().add(egui::Shape::Noop);
+            let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 40.0), Sense::hover());
+            if ui.rect_contains_pointer(r) {
+                ui.painter().set(bg, egui::Shape::rect_filled(r, 3.0, Color32::from_rgb(241, 245, 249)));
+            }
+            let p = ui.painter();
+            let dot = Rect::from_center_size(pos2(r.left() + ROW_PAD + 7.0, r.center().y), vec2(14.0, 14.0));
+            p.rect_filled(dot, 4.0, event_color(e));
+            p.rect_stroke(dot, 4.0, Stroke::new(1.0_f32, BORDER), StrokeKind::Inside);
+            let what = match e.kind {
+                EventKind::FilamentChange => "Filamentwechsel",
+                EventKind::Pause => "Pause",
+                EventKind::Custom => "Eigener G-Code",
+            };
+            let x = dot.right() + 10.0;
+            let clip = Rect::from_min_max(pos2(x, r.top()), pos2(r.right() - 110.0, r.bottom()));
+            let z = zs.get(e.layer).map(|z| format!(" · Z {:.2} mm", z)).unwrap_or_default();
+            p.with_clip_rect(clip).text(pos2(x, r.top() + 12.0), Align2::LEFT_CENTER, format!("{} vor Schicht {}", what, e.layer + 1), FontId::proportional(13.0), TEXT);
+            let mut sub = z.trim_start_matches(" · ").to_string();
+            if e.minutes > 0.0 {
+                sub.push_str(&format!("{}{} min", if sub.is_empty() { "" } else { " · " }, template_num(e.minutes)));
+            }
+            if !e.note.trim().is_empty() && e.kind != EventKind::Custom {
+                sub.push_str(&format!(" · {}", short(e.note.trim(), 28)));
+            }
+            p.with_clip_rect(clip).text(pos2(x, r.top() + 29.0), Align2::LEFT_CENTER, sub, FontId::proportional(11.5), Color32::from_rgb(128, 134, 140));
+            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_max(pos2(r.right() - 110.0, r.top()), pos2(r.right() - ROW_PAD, r.bottom()))).layout(egui::Layout::right_to_left(egui::Align::Center)));
+            if child.add_sized(vec2(26.0, CTRL_H), egui::Button::new("✕")).on_hover_text("Entfernen").clicked() {
+                remove = Some(i);
+            }
+            if !zs.is_empty() && child.add_sized(vec2(62.0, CTRL_H), egui::Button::new("Zeigen")).on_hover_text("Die Vorschau so, wie der Druck an dieser Stelle aussieht").clicked() {
+                show = Some(e.layer);
+            }
+        }
+        if let Some(l) = show {
+            self.print.preview = true;
+            self.print.layer_hi = l.saturating_sub(1);
+            self.print.layer_lo = self.print.layer_lo.min(self.print.layer_hi);
+            self.print.cut = usize::MAX;
+        }
+        if let Some(i) = remove {
+            self.print.settings.events.remove(i);
+            self.print_events_changed();
+        }
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.add_space(ROW_PAD);
+            if ui.button("Alle entfernen").clicked() {
+                self.print.settings.events.clear();
+                self.print_events_changed();
+            }
+        });
     }
 
     // ------------------------------------------------------------------ viewport
@@ -1562,6 +2168,11 @@ schließen", true, false).on_hover_text("Zurück zu Werkzeuge").clicked() {
     }
 
     pub fn print_viewport(&mut self, ui: &mut egui::Ui) {
+        if self.print.web_open {
+            self.print_web_viewport(ui);
+            return;
+        }
+        self.print.web_rect = None;
         let (rect, resp) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
         super::ui::no_hand(ui.ctx(), resp.id);
         self.viewport_size = (rect.width().max(1.0), rect.height().max(1.0));
@@ -1818,9 +2429,54 @@ schließen", true, false).on_hover_text("Zurück zu Werkzeuge").clicked() {
         let ly = |l: usize| y1 - (y1 - y0) * if nl > 1 { l as f32 / (nl - 1) as f32 } else { 1.0 };
         p.rect_filled(track, 3.0, Color32::from_rgb(214, 218, 222));
         p.rect_filled(Rect::from_min_max(pos2(x - 3.0, ly(self.print.layer_hi)), pos2(x + 3.0, ly(self.print.layer_lo))), 3.0, ACCENT);
+        // pauses and filament changes beside the track
+        for e in &self.print.settings.events {
+            if e.layer < nl {
+                let y = ly(e.layer);
+                let m = Rect::from_min_max(pos2(x + 6.0, y - 3.0), pos2(x + 18.0, y + 3.0));
+                p.rect_filled(m, 1.5, event_color(e));
+                p.rect_stroke(m, 1.5, Stroke::new(1.0_f32, Color32::from_rgb(60, 64, 70)), StrokeKind::Inside);
+            }
+        }
         let id = ui.id().with("pr_layer_slider");
-        let area = Rect::from_min_max(pos2(x - 40.0, y0 - 14.0), pos2(x + 14.0, y1 + 14.0));
+        let area = Rect::from_min_max(pos2(x - 40.0, y0 - 14.0), pos2(x + 20.0, y1 + 14.0));
         let sr = ui.interact(area, id, Sense::click_and_drag());
+        let busy = self.print.busy();
+        let (hi_now, lo_now) = (self.print.layer_hi.min(nl - 1), self.print.layer_lo.min(self.print.layer_hi.min(nl - 1)));
+        sr.context_menu(|ui| {
+            ui.set_min_width(260.0);
+            if hi_now == 0 {
+                ui.label("Vor der ersten Schicht geht keine Pause.");
+            } else {
+                ui.add_enabled_ui(!busy, |ui| {
+                    for kind in [EventKind::FilamentChange, EventKind::Pause] {
+                        let what = if kind == EventKind::Pause { "Pause" } else { "Filamentwechsel" };
+                        if ui.button(format!("{} vor Schicht {}", what, hi_now + 1)).clicked() {
+                            self.print_add_events(kind, &[hi_now]);
+                            ui.close_menu();
+                        }
+                        if lo_now != hi_now && lo_now > 0 && ui.button(format!("{} vor Schicht {} und {}", what, lo_now + 1, hi_now + 1)).clicked() {
+                            self.print_add_events(kind, &[lo_now, hi_now]);
+                            ui.close_menu();
+                        }
+                    }
+                    let here: Vec<usize> = self.print.settings.events.iter().enumerate().filter(|(_, e)| e.layer == hi_now).map(|(i, _)| i).collect();
+                    if !here.is_empty() && ui.button(format!("Ereignisse vor Schicht {} entfernen", hi_now + 1)).clicked() {
+                        self.print.settings.events.retain(|e| e.layer != hi_now);
+                        self.print_events_changed();
+                        ui.close_menu();
+                    }
+                });
+            }
+            ui.separator();
+            if ui.button("Pausen & Filamentwechsel verwalten …").clicked() {
+                self.print.panel_tab = 7;
+                if self.print.ev_layers.trim().is_empty() && hi_now > 0 {
+                    self.print.ev_layers = (hi_now + 1).to_string();
+                }
+                ui.close_menu();
+            }
+        });
         let pick_layer = |py: f32| (((y1 - py) / (y1 - y0)).clamp(0.0, 1.0) * (nl - 1) as f32).round() as usize;
         if sr.drag_started() || sr.clicked() {
             if let Some(pp) = sr.interact_pointer_pos() {
@@ -1986,7 +2642,7 @@ schließen", true, false).on_hover_text("Zurück zu Werkzeuge").clicked() {
         painter.line_segment([pos2(x + 8.0, y), pos2(x + w - 8.0, y)], Stroke::new(1.0_f32, SEP));
         y += 6.0;
         for (k, v) in [
-            ("Druckzeit", gcode::fmt_time(st.time)),
+            ("Druckzeit", pause_text(st)),
             ("Filament", format!("{:.2} m · {:.2} cm³", st.filament_mm / 1000.0, st.volume_cm3)),
             ("Gewicht · Kosten", format!("{:.1} g · {:.2} €", st.grams, st.cost)),
             ("Schichten", format!("{} · {:.2} mm hoch", st.layers, st.max_z)),
@@ -2049,7 +2705,7 @@ schließen", true, false).on_hover_text("Zurück zu Werkzeuge").clicked() {
                 });
                 super::dlgkit::hline(ui);
                 for (k, v) in [
-                    ("Druckzeit", gcode::fmt_time(st.time)),
+                    ("Druckzeit", pause_text(st)),
                     ("Schichten", st.layers.to_string()),
                     ("Filament", format!("{:.2} m ({:.2} cm³)", st.filament_mm / 1000.0, st.volume_cm3)),
                     ("Gewicht", format!("{:.2} g", st.grams)),
@@ -2169,6 +2825,21 @@ schließen", true, false).on_hover_text("Zurück zu Werkzeuge").clicked() {
                             ui.add(egui::TextEdit::multiline(&mut p.start_gcode).code_editor().desired_rows(8).desired_width(500.0));
                             section(ui, "End-G-Code");
                             ui.add(egui::TextEdit::multiline(&mut p.end_gcode).code_editor().desired_rows(6).desired_width(500.0));
+                            section(ui, "Pause und Filamentwechsel");
+                            ui.label(egui::RichText::new(format!(
+                                "Leer = Standard für {}: Pause „{}“, Filamentwechsel „{}“. Der Kopf ist dann schon angehoben und geparkt. Versteht die Firmware den Befehl nicht (Marlin ohne PARK_HEAD_ON_PAUSE kennt kein M601), hier z. B. M0 oder M25 eintragen.",
+                                p.flavor.name(),
+                                gcode::pause_command(p.flavor),
+                                gcode::change_command(p.flavor)
+                            )).size(11.5).color(DIM_TEXT));
+                            ui.horizontal(|ui| {
+                                ui.add_sized(vec2(130.0, 20.0), egui::Label::new("Pause"));
+                                ui.add(egui::TextEdit::multiline(&mut p.pause_gcode).code_editor().hint_text(gcode::pause_command(p.flavor)).desired_rows(1).desired_width(360.0));
+                            });
+                            ui.horizontal(|ui| {
+                                ui.add_sized(vec2(130.0, 20.0), egui::Label::new("Filamentwechsel"));
+                                ui.add(egui::TextEdit::multiline(&mut p.change_gcode).code_editor().hint_text(gcode::change_command(p.flavor)).desired_rows(1).desired_width(360.0));
+                            });
                             section(ui, "G-Code beim Schichtwechsel");
                             ui.add(egui::TextEdit::multiline(&mut p.layer_gcode).code_editor().desired_rows(3).desired_width(500.0));
                             ui.label(egui::RichText::new("Platzhalter wie in Orca: [bed_temperature_initial_layer_single], [nozzle_temperature_initial_layer], {if …}…{endif}, {max_layer_z} …").size(11.5).color(DIM_TEXT));
@@ -2314,98 +2985,177 @@ schließen", true, false).on_hover_text("Zurück zu Werkzeuge").clicked() {
         let mut test_save = false;
         let mut test_send = false;
         let offs = zoffset::test_offsets(a.adjust);
-        let open = super::dlgkit::cwin(ctx, "pr_zoff", "Z-Offset-Assistent", false, pos2(380.0, 120.0), 560.0, |ui| {
-            super::dlgkit::pad(ui, 10.0, |ui| {
-                egui::ScrollArea::vertical().max_height(620.0).show(ui, |ui| {
+        let mut copied: Option<String> = None;
+        let open = super::dlgkit::cwin(ctx, "pr_zoff", "Z-Offset-Assistent", false, pos2(380.0, 120.0), 600.0, |ui| {
+            super::dlgkit::pad(ui, 6.0, |ui| {
+                let tall = (ui.ctx().screen_rect().height() - 220.0).clamp(300.0, 680.0);
+                egui::ScrollArea::vertical().max_height(tall).min_scrolled_height(tall).auto_shrink([false, true]).show(ui, |ui| {
+                    ui.set_width(588.0);
                     ui.spacing_mut().item_spacing = vec2(6.0, 4.0);
-                    let head = |ui: &mut egui::Ui, t: &str| {
-                        ui.add_space(6.0);
-                        ui.label(egui::RichText::new(t).size(13.5).strong().color(LABEL));
+                    let w = ui.available_width() - 2.0 * ROW_PAD;
+                    // wrapped text in the dialog's column
+                    let para = |ui: &mut egui::Ui, t: &str, size: f32, col: Color32| {
+                        wrapped(ui, ROW_PAD, w, egui::RichText::new(t).size(size).color(col));
                     };
-                    let dim = |ui: &mut egui::Ui, t: &str| {
-                        ui.label(egui::RichText::new(t).size(12.5).color(TEXT));
+                    let bullets = |ui: &mut egui::Ui, items: &[String], numbered: bool| {
+                        for (i, t) in items.iter().enumerate() {
+                            ui.horizontal_top(|ui| {
+                                ui.add_space(ROW_PAD);
+                                let mark = if numbered { format!("{}.", i + 1) } else { "•".to_string() };
+                                ui.add_sized(vec2(18.0, 16.0), egui::Label::new(egui::RichText::new(mark).size(12.5).color(SECTION_TEXT)));
+                                wrapped(ui, 0.0, w - 24.0, egui::RichText::new(t).size(12.5).color(TEXT));
+                            });
+                        }
                     };
-                    ui.label(egui::RichText::new(format!("{} · {} · {}", s.printer.name(), s.filament.name, s.printer.plate.name())).size(12.0).color(DIM_TEXT));
-                    head(ui, "Empfehlung");
-                    ui.label(
-                        egui::RichText::new(if a.adjust.abs() < 1e-9 {
-                            "Startwert: Offset wie für PLA lassen (±0,00 mm).".to_string()
+                    para(ui, &format!("{} · {} · {}", s.printer.name(), s.filament.name, s.printer.plate.name()), 12.0, Color32::from_rgb(128, 134, 140));
+                    // ---- recommendation: one value, then where it comes from ----
+                    draw_section(ui, "Empfehlung");
+                    {
+                        let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), 54.0), Sense::hover());
+                        let card = Rect::from_min_max(pos2(r.left() + ROW_PAD, r.top()), pos2(r.right() - ROW_PAD, r.bottom()));
+                        let p = ui.painter();
+                        p.rect_filled(card, 6.0, Color32::WHITE);
+                        p.rect_stroke(card, 6.0, Stroke::new(1.0_f32, Color32::from_rgb(214, 219, 224)), StrokeKind::Inside);
+                        let (big, what) = if a.adjust.abs() < 1e-9 {
+                            ("±0,00 mm".to_string(), "Offset wie für PLA lassen".to_string())
                         } else {
-                            format!("Startwert: {:+.2} mm gegenüber dem für PLA eingestellten Offset ({}).", a.adjust, if a.adjust < 0.0 { "Düse näher ans Bett" } else { "Düse weiter weg" })
-                        })
-                        .size(13.0)
-                        .color(TEXT),
-                    );
-                    for r in &a.reasons {
-                        dim(ui, &format!("• {}", r));
+                            (format!("{} mm", de_mm(a.adjust)), if a.adjust < 0.0 { "Düse näher ans Bett" } else { "Düse weiter vom Bett weg" }.to_string())
+                        };
+                        p.text(pos2(card.left() + 14.0, card.center().y), Align2::LEFT_CENTER, &big, FontId::proportional(22.0), ACCENT);
+                        let bw = p.layout_no_wrap(big.clone(), FontId::proportional(22.0), ACCENT).size().x;
+                        p.text(pos2(card.left() + 28.0 + bw, card.center().y - 8.0), Align2::LEFT_CENTER, &what, FontId::proportional(13.0), TEXT);
+                        p.text(pos2(card.left() + 28.0 + bw, card.center().y + 9.0), Align2::LEFT_CENTER, "gegenüber dem für PLA eingestellten Offset", FontId::proportional(11.5), Color32::from_rgb(128, 134, 140));
                     }
-                    ui.label(egui::RichText::new(format!("Anpressung der ersten Schicht: {:.1} : 1 (Breite ÷ Höhe, gut sind 2–2,5).", a.squish)).size(12.0).color(DIM_TEXT));
+                    ui.add_space(4.0);
+                    for (why, d) in &a.reasons {
+                        ui.horizontal_top(|ui| {
+                            ui.add_space(ROW_PAD);
+                            let chip = if d.abs() > 1e-9 { de_mm(*d) } else { "±0,00".into() };
+                            let (cr, _) = ui.allocate_exact_size(vec2(52.0, 18.0), Sense::hover());
+                            ui.painter().rect_filled(cr, 9.0, Color32::from_rgb(234, 237, 240));
+                            ui.painter().text(cr.center(), Align2::CENTER_CENTER, chip, FontId::proportional(11.5), LABEL);
+                            wrapped(ui, 0.0, w - 60.0, egui::RichText::new(why).size(12.5).color(TEXT));
+                        });
+                    }
+                    let good = (1.9..=2.7).contains(&a.squish);
+                    row(ui, "Anpressung der ersten Schicht (Breite ÷ Höhe)", 180.0, |ui| {
+                        ui.label(egui::RichText::new(format!("{} : 1 {}", de_num(a.squish, 1), if good { "· gut" } else { "· gut sind 2–2,5" })).size(13.0).color(if good { Color32::from_rgb(30, 140, 60) } else { Color32::from_rgb(200, 110, 0) }));
+                        false
+                    });
+                    // ---- live adjustment ----
                     if flavor != Flavor::Bambu {
-                        head(ui, "Während der ersten Schicht nachstellen");
-                        ui.label(egui::RichText::new("Negativ = Düse näher ans Bett, positiv = weiter weg.").size(12.0).color(DIM_TEXT));
-                        ui.horizontal_wrapped(|ui| {
-                            for d in [-0.05, -0.02, -0.01, 0.01, 0.02, 0.05] {
-                                let cmd = zoffset::live_command(flavor, d);
-                                let kind = if net_ok && !busy { 0 } else { 2 };
-                                let hit = super::dlgkit::btn(ui, &format!("{:+.2}", d), 64.0, kind);
-                                if hit && kind == 0 {
-                                    live = Some(cmd);
+                        draw_section(ui, "Während der ersten Schicht nachstellen");
+                        para(ui, "Negativ = Düse näher ans Bett, positiv = weiter weg.", 12.0, Color32::from_rgb(128, 134, 140));
+                        let mut hovered = None;
+                        ui.horizontal(|ui| {
+                            ui.add_space(ROW_PAD);
+                            let (area, _) = ui.allocate_exact_size(vec2(w, 34.0), Sense::hover());
+                            let p = ui.painter().clone();
+                            p.rect_filled(area, 6.0, Color32::from_rgb(234, 237, 240));
+                            let steps = [-0.05, -0.02, -0.01, 0.01, 0.02, 0.05];
+                            let cw = area.width() / steps.len() as f32;
+                            for (k, d) in steps.iter().enumerate() {
+                                let cell = Rect::from_min_size(pos2(area.left() + k as f32 * cw, area.top()), vec2(cw, area.height())).shrink(3.0);
+                                let resp = ui.interact(cell, ui.id().with(("pr_zoff_step", k)), if busy { Sense::hover() } else { Sense::click() });
+                                let cmd = zoffset::live_command(flavor, *d);
+                                if resp.hovered() {
+                                    hovered = Some(cmd.clone());
+                                    p.rect_filled(cell, 5.0, Color32::WHITE);
+                                    p.rect_stroke(cell, 5.0, Stroke::new(1.0_f32, Color32::from_rgb(208, 213, 218)), StrokeKind::Inside);
+                                }
+                                let col = if *d < 0.0 { Color32::from_rgb(40, 100, 200) } else { Color32::from_rgb(200, 110, 0) };
+                                p.text(cell.center(), Align2::CENTER_CENTER, de_mm(*d), FontId::proportional(13.5), col);
+                                let tip = if net_ok { format!("An den Drucker senden: {}", cmd) } else { format!("Befehl kopieren: {}", cmd) };
+                                if resp.on_hover_text(tip).clicked() {
+                                    if net_ok {
+                                        live = Some(cmd);
+                                    } else {
+                                        ui.ctx().copy_text(cmd.clone());
+                                        copied = Some(cmd);
+                                    }
                                 }
                             }
                         });
-                        ui.label(egui::RichText::new(format!("Befehl: {}", zoffset::live_command(flavor, -0.02))).monospace().size(12.0).color(TEXT));
-                        if !net_ok {
-                            ui.label(egui::RichText::new("Die Knöpfe senden den Befehl direkt an den Drucker – dazu unter „Netzwerkdrucker“ die Adresse eintragen.").size(11.5).color(DIM_TEXT));
-                        }
+                        let shown = hovered.unwrap_or_else(|| zoffset::live_command(flavor, -0.02));
+                        ui.horizontal(|ui| {
+                            ui.add_space(ROW_PAD);
+                            ui.label(egui::RichText::new("Befehl").size(12.0).color(Color32::from_rgb(128, 134, 140)));
+                            ui.label(egui::RichText::new(shown).monospace().size(12.0).color(TEXT));
+                        });
+                        para(
+                            ui,
+                            if net_ok { "Ein Klick sendet den Befehl sofort an den Drucker." } else { "Ein Klick kopiert den Befehl (für die Konsole des Druckers). Mit eingetragenem Netzwerkdrucker wird er direkt gesendet." },
+                            11.5,
+                            Color32::from_rgb(128, 134, 140),
+                        );
                     }
-                    head(ui, "Woran man die erste Schicht erkennt");
-                    egui::Grid::new("pr_zoff_sym").striped(true).num_columns(2).spacing(vec2(12.0, 4.0)).show(ui, |ui| {
-                        for (sym, fix, dir) in zoffset::SYMPTOMS {
-                            ui.label(egui::RichText::new(sym).size(12.5));
+                    // ---- symptoms: two wrapped columns, the fix with a coloured dot ----
+                    draw_section(ui, "Woran man die erste Schicht erkennt");
+                    {
+                        let left_w = (w * 0.52).floor();
+                        let right_w = w - left_w - 22.0;
+                        for (i, (sym, fix, dir)) in zoffset::SYMPTOMS.iter().enumerate() {
                             let col = match dir {
                                 0 => Color32::from_rgb(30, 140, 60),
                                 -1 => Color32::from_rgb(40, 100, 200),
                                 _ => Color32::from_rgb(200, 110, 0),
                             };
-                            ui.label(egui::RichText::new(fix).size(12.5).color(col));
-                            ui.end_row();
+                            let p = ui.painter().clone();
+                            let gl = p.layout(sym.to_string(), FontId::proportional(12.5), TEXT, left_w - 8.0);
+                            let gr = p.layout(fix.to_string(), FontId::proportional(12.5), col, right_w);
+                            let h = gl.size().y.max(gr.size().y) + 10.0;
+                            let (r, _) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());
+                            let r = Rect::from_min_max(pos2(r.left() + ROW_PAD, r.top()), pos2(r.right() - ROW_PAD, r.bottom()));
+                            if i % 2 == 0 {
+                                p.rect_filled(r, 3.0, Color32::from_rgb(244, 246, 248));
+                            }
+                            p.galley(pos2(r.left() + 6.0, r.top() + 5.0), gl, TEXT);
+                            p.circle_filled(pos2(r.left() + left_w + 8.0, r.top() + 5.0 + 8.0), 4.0, col);
+                            p.galley(pos2(r.left() + left_w + 18.0, r.top() + 5.0), gr, col);
                         }
-                    });
-                    head(ui, "Testdruck");
-                    dim(
+                    }
+                    // ---- test print ----
+                    draw_section(ui, "Testdruck");
+                    para(
                         ui,
                         &format!(
-                            "{} Felder in einer Reihe, von links nach rechts mit {} (das linke hat vorne eine Lasche). Das glatteste Feld wählen und dessen Wert übernehmen.",
+                            "{} Felder in einer Reihe, von links nach rechts {} mm (das linke hat vorne eine Lasche). Das glatteste Feld wählen und dessen Wert übernehmen.",
                             offs.len(),
-                            offs.iter().map(|d| format!("{:+.2}", d)).collect::<Vec<_>>().join(" / ")
+                            offs.iter().map(|d| de_mm(*d)).collect::<Vec<_>>().join(" / ")
                         ),
+                        12.5,
+                        TEXT,
                     );
+                    ui.add_space(2.0);
                     ui.horizontal(|ui| {
+                        ui.add_space(ROW_PAD);
                         if super::dlgkit::btn(ui, "Testdruck speichern …", 170.0, 0) {
                             test_save = true;
                         }
                         let k = if net_ok && !busy { 1 } else { 2 };
-                        if super::dlgkit::btn(ui, "Testdruck an Drucker senden", 210.0, k) && k == 1 {
+                        let hit = super::dlgkit::btn(ui, "An Drucker senden", 170.0, k);
+                        if hit && k == 1 {
                             test_send = true;
                         }
                     });
-                    head(ui, "Grundeinstellung finden");
-                    for (i, l) in a.calibrate.iter().enumerate() {
-                        dim(ui, &format!("{}. {}", i + 1, l));
+                    if !net_ok {
+                        para(ui, "Zum Senden unter „Netzwerkdrucker“ die Adresse des Druckers eintragen.", 11.5, Color32::from_rgb(128, 134, 140));
                     }
-                    head(ui, "Dauerhaft speichern");
-                    for l in &a.save {
-                        dim(ui, &format!("• {}", l));
-                    }
+                    draw_section(ui, "Grundeinstellung finden");
+                    bullets(ui, &a.calibrate, true);
+                    draw_section(ui, "Dauerhaft speichern");
+                    bullets(ui, &a.save, false);
                     if !a.tips.is_empty() {
-                        head(ui, "Hinweise");
-                        for t in &a.tips {
-                            dim(ui, &format!("• {}", t));
-                        }
+                        draw_section(ui, "Hinweise");
+                        bullets(ui, &a.tips, false);
                     }
+                    ui.add_space(6.0);
                 });
             });
         });
+        if let Some(cmd) = copied {
+            self.say(format!("Z-Offset: Befehl kopiert – {}", cmd), MsgKind::Info);
+        }
         if let Some(cmd) = live {
             self.print_net(NetWhat::Gcode, move |c| network::run_gcode(c, &cmd));
         }
@@ -2428,6 +3178,129 @@ schließen", true, false).on_hover_text("Zurück zu Werkzeuge").clicked() {
             self.print.zoff_open = false;
         }
     }
+}
+
+/// Wrapped text `w` wide, `indent` from the left: every line starts at the indent (a wrapped
+/// label laid out inline would start its second line at the row's left edge).
+fn wrapped(ui: &mut egui::Ui, indent: f32, w: f32, text: egui::RichText) {
+    ui.horizontal_top(|ui| {
+        ui.add_space(indent);
+        ui.vertical(|ui| {
+            ui.set_width(w);
+            ui.add(egui::Label::new(text).wrap());
+        });
+    });
+}
+
+/// A number the German way: decimal comma, real minus sign.
+fn de_num(v: f64, dec: usize) -> String {
+    format!("{:.*}", dec, v).replace('.', ",").replace('-', "−")
+}
+
+/// A signed millimetre step: "−0,02", "+0,05".
+fn de_mm(v: f64) -> String {
+    format!("{:+.2}", v).replace('.', ",").replace('-', "−")
+}
+
+const TAB_NAMES: [&str; 8] = ["Qualität", "Festigkeit", "Geschwindigkeit", "Stützen", "Haftung", "Kühlung", "Weiteres", "Pause/Wechsel"];
+
+/// A colour swatch button (same size as the icon boxes) that opens the filament colours;
+/// the new colour when one was picked.
+fn color_button(ui: &mut egui::Ui, key: &str, cur: [u8; 3], tip: &str) -> Option<[u8; 3]> {
+    let (r, resp) = ui.allocate_exact_size(vec2(36.0, 32.0), Sense::click());
+    let p = ui.painter();
+    p.rect_filled(r, 1.0, if resp.hovered() { HOVER_BG } else { Color32::from_rgb(250, 250, 250) });
+    p.rect_stroke(r, 1.0, Stroke::new(1.0_f32, super::dlgkit::LINE), StrokeKind::Inside);
+    let sw = r.shrink2(vec2(9.0, 7.0));
+    p.rect_filled(sw, 3.0, Color32::from_rgb(cur[0], cur[1], cur[2]));
+    p.rect_stroke(sw, 3.0, Stroke::new(1.0_f32, Color32::from_rgb(120, 126, 132)), StrokeKind::Inside);
+    let id = ui.id().with(("pr_color_pop", key));
+    let resp = resp.on_hover_text(tip);
+    if resp.clicked() {
+        ui.memory_mut(|m| m.toggle_popup(id));
+    }
+    let mut out = None;
+    egui::popup_below_widget(ui, id, &resp, egui::PopupCloseBehavior::CloseOnClickOutside, |ui| {
+        ui.set_min_width(220.0);
+        ui.label(egui::RichText::new(tip).size(12.0).color(LABEL));
+        ui.horizontal_wrapped(|ui| {
+            ui.set_max_width(220.0);
+            ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
+            for (name, c) in printers::COLORS {
+                let (r, rs) = ui.allocate_exact_size(vec2(22.0, 22.0), Sense::click());
+                let sel = cur == *c;
+                ui.painter().rect_filled(r.shrink(1.0), 4.0, Color32::from_rgb(c[0], c[1], c[2]));
+                ui.painter().rect_stroke(r.shrink(1.0), 4.0, Stroke::new(if sel { 2.0_f32 } else { 1.0 }, if sel { SEL_BORDER } else { BORDER }), StrokeKind::Inside);
+                if rs.on_hover_text(*name).clicked() {
+                    out = Some(*c);
+                }
+            }
+        });
+        let mut c = cur;
+        ui.horizontal(|ui| {
+            ui.label("Eigene Farbe");
+            if ui.color_edit_button_srgb(&mut c).changed() {
+                out = Some(c);
+            }
+        });
+    });
+    out
+}
+
+fn template_num(v: f64) -> String {
+    crate::slicer::template::fmt_num((v * 10.0).round() / 10.0)
+}
+
+fn pause_text(st: &gcode::Stats) -> String {
+    if st.pauses == 0 {
+        gcode::fmt_time(st.time)
+    } else {
+        format!("{} (davon {} Pause)", gcode::fmt_time(st.time), gcode::fmt_time(st.pause_time))
+    }
+}
+
+/// Marker colour of a layer event.
+fn event_color(e: &LayerEvent) -> Color32 {
+    match e.kind {
+        EventKind::FilamentChange => Color32::from_rgb(e.color[0], e.color[1], e.color[2]),
+        EventKind::Pause => Color32::from_rgb(232, 140, 20),
+        EventKind::Custom => Color32::from_rgb(120, 126, 134),
+    }
+}
+
+/// "12, 30-32" (1-based, as on the slider) → layer indices 11, 29, 30, 31. Layer 1 cannot
+/// have an event before it.
+pub fn parse_layers(text: &str, layers: Option<usize>) -> Result<Vec<usize>, String> {
+    let mut out = vec![];
+    for tok in text.split(|c: char| c == ',' || c == ';' || c.is_whitespace()).filter(|t| !t.is_empty()) {
+        let num = |t: &str| t.trim().parse::<usize>().map_err(|_| format!("„{}“ ist keine Schichtnummer.", t.trim()));
+        let (a, b) = match tok.split_once('-') {
+            Some((a, b)) => (num(a)?, num(b)?),
+            None => {
+                let n = num(tok)?;
+                (n, n)
+            }
+        };
+        let (a, b) = (a.min(b), a.max(b));
+        if a < 2 {
+            return Err("Vor der ersten Schicht geht nichts – Schicht 2 oder höher wählen.".into());
+        }
+        if let Some(nl) = layers {
+            if b > nl {
+                return Err(format!("Schicht {} gibt es nicht, der Druck hat {} Schichten.", b, nl));
+            }
+        }
+        if b - a > 2000 {
+            return Err("Zu viele Schichten auf einmal.".into());
+        }
+        out.extend((a..=b).map(|n| n - 1));
+    }
+    if out.is_empty() {
+        return Err("Bitte eine oder mehrere Schichten angeben, z. B. 12 oder 12, 30-32.".into());
+    }
+    out.sort_unstable();
+    out.dedup();
+    Ok(out)
 }
 
 /// One line about what the support analysis found, for the status bar and the panel.

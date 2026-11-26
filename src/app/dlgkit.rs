@@ -321,7 +321,13 @@ pub fn tool_text(ui: &mut egui::Ui, text: &str, tip: &str) -> Response {
 
 /// Combo box. Returns true when another entry was chosen.
 pub fn combo(ui: &mut egui::Ui, key: &str, w: f32, cur: &mut usize, items: &[&str], enabled: bool, icon: Option<Icon>) -> bool {
-    let (r, resp) = ui.allocate_exact_size(vec2(w, 32.0), if enabled { Sense::click() } else { Sense::hover() });
+    combo_h(ui, key, w, 32.0, cur, items, enabled, icon)
+}
+
+/// `combo` with its own height (compact rows in settings lists).
+#[allow(clippy::too_many_arguments)]
+pub fn combo_h(ui: &mut egui::Ui, key: &str, w: f32, h: f32, cur: &mut usize, items: &[&str], enabled: bool, icon: Option<Icon>) -> bool {
+    let (r, resp) = ui.allocate_exact_size(vec2(w, h), if enabled { Sense::click() } else { Sense::hover() });
     let id = ui.id().with(("ccombo", key));
     if resp.clicked() {
         ui.memory_mut(|m| m.toggle_popup(id));

@@ -93,6 +93,10 @@ pub struct Printer {
     pub start_gcode: String,
     pub end_gcode: String,
     pub layer_gcode: String,
+    /// G-code for a pause (empty = the firmware's usual command, see `gcode::pause_command`)
+    pub pause_gcode: String,
+    /// G-code for a filament change (empty = the firmware's usual command)
+    pub change_gcode: String,
 }
 
 impl Default for Printer {
@@ -541,12 +545,86 @@ pub fn bead_area(w: f64, h: f64) -> f64 {
     (w - h) * h + std::f64::consts::PI * (h / 2.0).powi(2)
 }
 
+/// What happens at a layer event.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+pub enum EventKind {
+    /// swap the filament (another colour or material), M600
+    FilamentChange,
+    /// stop so something can be put in or glued in (magnets, nuts, electronics)
+    Pause,
+    /// the user's own G-code
+    Custom,
+}
+
+impl EventKind {
+    pub const ALL: [EventKind; 3] = [EventKind::FilamentChange, EventKind::Pause, EventKind::Custom];
+    pub fn name(&self) -> &'static str {
+        match self {
+            EventKind::FilamentChange => "Filamentwechsel",
+            EventKind::Pause => "Pause (Einlegen/Kleben)",
+            EventKind::Custom => "Eigener G-Code",
+        }
+    }
+}
+
+/// Something the printer does before it starts a layer: change the filament or pause, as the
+/// colour-change and pause markers on Orca's layer slider.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LayerEvent {
+    /// index of the layer it comes before (0 = first layer); that layer is printed after it
+    pub layer: usize,
+    pub kind: EventKind,
+    /// colour of the new filament (preview)
+    pub color: [u8; 3],
+    /// shown on the printer's display
+    pub note: String,
+    /// for `Custom`
+    pub gcode: String,
+    /// how long the printer is expected to stand still, minutes (time estimate)
+    pub minutes: f64,
+}
+
+impl LayerEvent {
+    /// Usual standstill: swapping filament takes longer than dropping in a magnet.
+    pub fn default_minutes(kind: EventKind) -> f64 {
+        match kind {
+            EventKind::FilamentChange => 3.0,
+            EventKind::Pause => 2.0,
+            EventKind::Custom => 0.0,
+        }
+    }
+}
+
+impl Default for LayerEvent {
+    fn default() -> Self {
+        LayerEvent { layer: 1, kind: EventKind::Pause, color: [220, 60, 50], note: String::new(), gcode: String::new(), minutes: 2.0 }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Settings {
     pub printer: Printer,
     pub filament: Filament,
     pub process: Process,
+    /// filament changes and pauses at chosen layers, sorted by layer
+    pub events: Vec<LayerEvent>,
+}
+
+impl Settings {
+    /// Filament colour of every layer: the filament's own until the first change.
+    pub fn layer_colors(&self, layers: usize) -> Vec<[u8; 3]> {
+        let mut c = self.filament.color;
+        let mut out = Vec::with_capacity(layers);
+        for li in 0..layers {
+            for e in self.events.iter().filter(|e| e.layer == li && e.kind == EventKind::FilamentChange) {
+                c = e.color;
+            }
+            out.push(c);
+        }
+        out
+    }
 }
 
 impl Settings {

@@ -8,9 +8,13 @@ The app is written in Rust and includes its own geometry kernel, constraint solv
 
 ![SolidWork workspace showing the feature tree and a bracket with a central boss and four mounting holes](docs/screens/bracket.png)
 
-## SolidWork 1.0.0
+## SolidWork 1.1.0
 
-Open **Werkzeuge → Assembler** to assemble parts, screws and populated circuit boards. Pick two flat faces to align them, then adjust rotation and confirm placement. The hardware library includes the ESP32 and Raspberry Pi 4 Model B (4 GB). The PCB bench checks power and GPIO connections.
+Every tool on the **Anwendungen** tab now works. Check a part for injection moulding or casting, size the mould base, run a filling simulation, let generative design find the stiffest shape, define welds, analyse tolerance stack-ups, get GD&T proposals, calculate in an embedded worksheet and render the part photo-realistically.
+
+| Spritzguss/Guss: draft and undercut check | Spritzgussanalyse: fill time from the gate |
+| --- | --- |
+| ![Draft analysis on the bracket with the Spritzguss/Guss dialog showing projected area, clamping force and parting plane](docs/screens/apps_mold.png) | ![Filling simulation on the bracket coloured by fill time with the result summary](docs/screens/apps_fill.png) |
 
 ## PCB editor, Idea pages and connectors
 
@@ -204,7 +208,21 @@ Copy the `solidwork-cad` folder into an agent's `<workspace>/skills/` (or `~/.op
 for all agents). It only shows up once `mcp.servers.solidwork` is configured. Check it with
 `openclaw skills info solidwork-cad --agent <id>`.
 
-## New in 1.2.0
+## New in 1.1.0
+
+- **Schweißen**: weld seams on selected edges (fillet, half-V, V, square butt, intermittent) with filler metal, welding time, cost and a strength check to EN 1993-1-8; the beads are drawn on the model and saved with the part
+- **Spritzguss/Guss**: draft colours against the pull direction with undercut detection, projected area, clamping force, parting plane, shrinkage, wall thickness and cooling time for nine plastics and casting alloys; selects the faces without draft and starts a draft on them
+- **Expert Moldbase**: standard plate stack for 1 to 8 cavities with guide pillars, screws, ejector stroke, mould height, steel weight, a matching injection moulding machine, a section drawing and a CSV parts list
+- **Spritzgussanalyse**: filling simulation with fill time (animated), pressure, wall thickness, cooling time, fill quality, weld lines and air traps
+- **Generatives Design**: topology optimisation from the loads of the structural study, with symmetry, live progress and STL export
+- **Ansys Simulation, Simulate, Simulate Ergebnisse, Flow Analysis**: high-accuracy studies, a mesh convergence study, side-by-side result comparison with report and CSV, and a pipe-flow calculator
+- **Mathcad**: a calculation sheet stored in the part that reads model parameters and mass properties and writes results back as parameters; four templates
+- **GD&T Advisor**: proposes datums A, B and C, form, orientation, runout and hole position tolerances (ISO 2768-2), creates them as 3D annotations and checks the existing ones
+- **EZ Tolerance Analysis**: tolerance stack-ups with worst case, RSS and Monte Carlo, histogram, contributions, Cp/Cpk and reject rate; measures chain members from selected faces
+- **Render Studio**: progressive path-traced pictures of the current view with nine materials, studio and outdoor lighting, soft shadows and a mirror floor; saves PNG
+- **3D-Druck**: browse Printables inside the app (macOS, Windows) and import STL, OBJ, 3MF and ZIP downloads; pauses and filament changes at chosen layers
+
+## New in Freo 1.2.0
 
 - **2D drawing to 3D part**: open a **DXF** (or **DWG** with LibreDWG or the ODA File Converter installed) and SolidWork builds the part from its views. Front, top and side views are found by their alignment (the isometric view, frame, title block, dimensions and centre lines are skipped), European or American projection from where the top view lies, the scale from the dimensions or the title block. The part is made of editable features: the top view's outline extruded, everything outside the front and side outlines cut away, holes and pockets cut over the depth their hidden lines show, round bosses shaped. Circles and arcs stay true circles and arcs with exact sizes; a single view becomes a plate (thickness from a "t=5" note). A dialog shows what was found and rebuilds with another projection, scale or thickness
 - **3D printing (Werkzeuge ▸ Manufacture ▸ Slicer)**: printer, filament and print profile, orient and arrange on the bed, supports, brim and skirt, slicing with a layer preview, G-code export
@@ -214,7 +232,7 @@ for all agents). It only shows up once `mcp.servers.solidwork` is configured. Ch
 - **Threads**: cosmetic threads show their turns on the cylinder; tapped standard holes show them too
 - **Sketcher**: circles drawn one after another snap to the first one's radius
 
-## New in 1.1.0
+## New in Freo 1.1.0
 
 Small things that got in the way, found by using SolidWork like a student would:
 

@@ -215,6 +215,15 @@ impl App {
             "htl" => Some(Tab::Htl),
             _ => None,
         };
+        // FREO_DEMO=app:<tool> opens a tool of the Anwendungen tab on the bracket
+        if let Some(which) = scene.strip_prefix("app:") {
+            self.data = bracket();
+            self.regenerate(false);
+            self.fit_pending = true;
+            self.tab = Tab::Apps;
+            self.demo_app_tool(which);
+            return;
+        }
         // FREO_DEMO=cnc:<view> computes the bracket on a mill and shows the CNC simulation
         if let Some(which) = scene.strip_prefix("cnc:") {
             // FREO_DEMO_KEEP: machine the part that was opened instead of the bracket
@@ -331,8 +340,26 @@ impl App {
             self.print.settings.process.support = which.contains("support");
             self.print.zoff_open = which.contains("zoff");
             self.print.net_open = which.contains("net");
+            if let Ok(q) = std::env::var("FREO_PRINT_SEARCH") {
+                self.print.search = q;
+            }
+            if let Some(t) = which.split_once("tab").and_then(|(_, s)| s.chars().next()).and_then(|c| c.to_digit(10)) {
+                self.print.panel_tab = t as usize;
+            }
+            if which.contains("web") {
+                self.print_open_web();
+            }
             if which.contains("prepare") {
                 return;
+            }
+            if which.contains("events") {
+                use crate::slicer::config::{EventKind, LayerEvent};
+                self.print.settings.events = vec![
+                    LayerEvent { layer: 12, kind: EventKind::Pause, note: "Magnete einlegen".into(), ..Default::default() },
+                    LayerEvent { layer: 30, kind: EventKind::FilamentChange, color: [40, 90, 220], ..Default::default() },
+                ];
+                self.print.panel_tab = 7;
+                self.print.ev_layers = "12, 30".into();
             }
             self.print_slice_blocking();
             self.print.mode = if which.contains("feature") { super::print3d::ColorMode::Feature } else if which.contains("speed") { super::print3d::ColorMode::Speed } else { super::print3d::ColorMode::Realistic };

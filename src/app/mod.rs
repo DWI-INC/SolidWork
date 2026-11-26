@@ -2,6 +2,8 @@
 
 pub mod analysis;
 pub mod annot3d;
+pub mod apps;
+pub mod apps2;
 pub mod artarget;
 pub mod assembly;
 pub mod assembler;
@@ -43,6 +45,7 @@ pub mod toolsdlg;
 pub mod toolsdlg2;
 pub mod ui;
 pub mod viewport;
+pub mod webview;
 
 use crate::kernel::math::*;
 use crate::model::features::*;
@@ -365,6 +368,7 @@ pub struct App {
     pub creo_thumb_pending: Option<eframe::egui::ColorImage>,
     /// Live-Simulation: solver job, results and display options
     pub sim: livesim::SimUi,
+    pub apps: apps::AppsUi,
     /// 3D-Druck: printer, filament, quality, placement on the plate, slicing and preview
     pub print: print3d::PrintUi,
     /// CNC: machine, material, tools, toolpaths, simulation and crash check
@@ -459,6 +463,7 @@ impl App {
             creo: Default::default(),
             creo_thumb_pending: None,
             sim: Default::default(),
+            apps: Default::default(),
             print: Default::default(),
             cnc: Default::default(),
             pcb: Default::default(),

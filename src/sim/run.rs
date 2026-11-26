@@ -31,7 +31,7 @@ pub struct Field {
 }
 
 impl Field {
-    fn new(name: &str, unit: &str, vals: Vec<f32>, disp: Option<usize>) -> Field {
+    pub fn new(name: &str, unit: &str, vals: Vec<f32>, disp: Option<usize>) -> Field {
         let (mut min, mut max) = (f32::INFINITY, f32::NEG_INFINITY);
         for v in &vals {
             if v.is_finite() {
@@ -132,7 +132,7 @@ pub fn budget(kind: StudyKind, fidelity: f32) -> usize {
     }
 }
 
-fn fmt(v: f64) -> String {
+pub fn fmt(v: f64) -> String {
     let a = v.abs();
     if a == 0.0 {
         "0".into()
@@ -152,7 +152,7 @@ fn f3(v: V3) -> [f32; 3] {
 }
 
 /// Fine triangles and edge pieces of the part (no edge longer than `max_edge`).
-fn build_surface(topo: &Topology, mut max_edge: f64) -> (Surface, Vec<V3>) {
+pub fn build_surface(topo: &Topology, mut max_edge: f64) -> (Surface, Vec<V3>) {
     fn split(p: [V3; 3], n: [V3; 3], max2: f64, depth: u32, out: &mut Surface) {
         let l = [(p[1] - p[0]).length_squared(), (p[2] - p[1]).length_squared(), (p[0] - p[2]).length_squared()];
         let k = if l[0] >= l[1] && l[0] >= l[2] {
@@ -293,7 +293,7 @@ fn thermal_input(mesh: &Mesh, topo: &Topology, study: &Study, mat: &Material, wa
     Ok(inp)
 }
 
-fn struct_input(mesh: &Mesh, topo: &Topology, study: &Study, mat: &Material, warnings: &mut Vec<String>) -> Result<StructIn, String> {
+pub fn struct_input(mesh: &Mesh, topo: &Topology, study: &Study, mat: &Material, warnings: &mut Vec<String>) -> Result<StructIn, String> {
     let mut inp = StructIn { e: mat.e, nu: mat.nu, rho: mat.rho * 1e-12, alpha: mat.alpha, ..Default::default() };
     for it in &study.items {
         if it.kind.is_thermal() || it.kind.is_fluid() {

@@ -447,12 +447,14 @@ impl App {
 }
 
 impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         if std::env::var("FREO_DEMO").as_deref() == Ok("icons") {
             super::demo::icon_sheet(ctx);
             self.demo_tick(ctx);
             return;
         }
+        // Printables over the 3D-Druck viewport (placed where last frame's layout put it)
+        self.print_web_sync(ctx, frame);
         // closing the window (File ▸ Exit, the close button, ⌘Q) asks before discarding work
         if ctx.input(|i| i.viewport().close_requested()) && std::env::var("FREO_EXIT").is_err() && !self.confirm_discard() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -576,7 +578,10 @@ impl eframe::App for App {
             Outcome::None => {}
         }
         self.combo_bar(ctx, central);
-        self.graphics_toolbar(ctx, central);
+        // the view toolbar has nothing to do over Printables (and would sit on its toolbar)
+        if !(self.tab == Tab::Print && self.print.web_open) {
+            self.graphics_toolbar(ctx, central);
+        }
         self.file_menu_ui(ctx);
         if self.editor.as_ref().is_some_and(|editor| matches!(editor.feature.kind, FeatureKind::Hole(_) | FeatureKind::Round(_) | FeatureKind::Chamfer(_))) {
             self.dash_panel_anchor = central.left_top();
@@ -594,6 +599,7 @@ impl eframe::App for App {
         self.new_dialogs(ctx);
         self.tool_windows(ctx);
         self.sim_windows(ctx);
+        self.apps_windows(ctx);
         self.print_windows(ctx);
         self.cnc_windows(ctx);
         self.pcb_windows(ctx);

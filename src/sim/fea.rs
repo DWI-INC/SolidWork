@@ -229,6 +229,8 @@ pub struct Op<'a> {
     pub free: &'a [bool],
     /// node, symmetric d×d block added to the diagonal (row-major 3×3; heat uses [0])
     pub extra: &'a [(u32, [f64; 9])],
+    /// stiffness factor per element (topology optimisation); None = all 1
+    pub scale: Option<&'a [f64]>,
 }
 
 impl Op<'_> {
@@ -236,11 +238,13 @@ impl Op<'_> {
         let (d, m) = (self.d, self.mesh);
         let ed = 8 * d;
         fe.resize(m.elems.len() * ed, 0.0);
-        let (ke, free) = (self.ke, self.free);
+        let (ke, free, scale) = (self.ke, self.free, self.scale);
         par_chunks(fe, ed, |start, chunk| {
             let mut u = [0.0f64; 24];
             for (ei, out) in chunk.chunks_mut(ed).enumerate() {
-                let en = &m.elems[start / ed + ei];
+                let e = start / ed + ei;
+                let en = &m.elems[e];
+                let sc = scale.map_or(1.0, |s| s[e]);
                 for a in 0..8 {
                     let b = en[a] as usize * d;
                     for c in 0..d {
@@ -253,7 +257,7 @@ impl Op<'_> {
                     for j in 0..ed {
                         s += row[j] * u[j];
                     }
-                    *o = s;
+                    *o = s * sc;
                 }
             }
         });
@@ -302,9 +306,10 @@ impl Op<'_> {
                 if ne[a] == NONE {
                     continue;
                 }
+                let sc = self.scale.map_or(1.0, |s| s[ne[a] as usize]);
                 for r in 0..d {
                     for c in 0..d {
-                        blocks[n][r * 3 + c] += self.ke[(a * d + r) * ed + a * d + c];
+                        blocks[n][r * 3 + c] += self.ke[(a * d + r) * ed + a * d + c] * sc;
                     }
                 }
             }
@@ -438,7 +443,7 @@ pub struct StructOut {
 }
 
 /// Free-dof mask, prescribed values and penalty blocks of the supports.
-fn supports(mesh: &Mesh, inp: &StructIn, kref: f64) -> (Vec<bool>, Vec<f64>, Vec<(u32, [f64; 9])>) {
+pub fn supports(mesh: &Mesh, inp: &StructIn, kref: f64) -> (Vec<bool>, Vec<f64>, Vec<(u32, [f64; 9])>) {
     let nn = mesh.nodes.len();
     let mut free = vec![true; 3 * nn];
     let mut u0 = vec![0.0; 3 * nn];
@@ -524,8 +529,8 @@ pub fn solve_struct(mesh: &Mesh, inp: &StructIn, ctl: &Ctl) -> Result<StructOut,
         }
     }
     let all = vec![true; 3 * nn];
-    let full = Op { mesh, d: 3, ke: &el.ke, free: &all, extra: &extra };
-    let op = Op { mesh, d: 3, ke: &el.ke, free: &free, extra: &extra };
+    let full = Op { mesh, d: 3, ke: &el.ke, free: &all, extra: &extra, scale: None };
+    let op = Op { mesh, d: 3, ke: &el.ke, free: &free, extra: &extra, scale: None };
     let mut fe = vec![];
     let mut ku0 = vec![0.0; 3 * nn];
     let lifted = u0.iter().any(|v| *v != 0.0);
@@ -652,8 +657,8 @@ pub fn solve_thermal(mesh: &Mesh, inp: &ThermalIn, ctl: &Ctl, span: (f32, f32)) 
         q[*n as usize] += ha * tinf;
     }
     let all = vec![true; nn];
-    let full = Op { mesh, d: 1, ke: &ke, free: &all, extra: &extra };
-    let op = Op { mesh, d: 1, ke: &ke, free: &free, extra: &extra };
+    let full = Op { mesh, d: 1, ke: &ke, free: &all, extra: &extra, scale: None };
+    let op = Op { mesh, d: 1, ke: &ke, free: &free, extra: &extra, scale: None };
     let mut fe = vec![];
     let mut kt0 = vec![0.0; nn];
     full.apply(&t0, &mut kt0, &mut fe);
@@ -796,7 +801,7 @@ pub fn solve_modal(mesh: &Mesh, inp: &StructIn, want: usize, ctl: &Ctl) -> Resul
     let el = elem_struct(mesh.grid.h, inp.e, inp.nu);
     let (free, _, extra) = supports(mesh, inp, el.ke[0]);
     let unconstrained = free.iter().all(|f| *f) && extra.is_empty();
-    let op = Op { mesh, d: 3, ke: &el.ke, free: &free, extra: &extra };
+    let op = Op { mesh, d: 3, ke: &el.ke, free: &free, extra: &extra, scale: None };
     let inv = op.precond();
     let mnode = inp.rho * mesh.elem_volume() / 8.0;
     let mut mass = vec![0.0; n];

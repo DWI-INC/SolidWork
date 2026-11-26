@@ -231,6 +231,8 @@ pub fn artillery_m1_pro() -> Printer {
         start_gcode: M1_START.into(),
         end_gcode: M1_END.into(),
         layer_gcode: M1_LAYER.into(),
+        pause_gcode: String::new(),
+        change_gcode: String::new(),
     }
 }
 
@@ -396,6 +398,8 @@ fn from_row(r: &Row) -> Printer {
         start_gcode: if delta { DELTA_START.into() } else { GENERIC_START.into() },
         end_gcode: GENERIC_END.into(),
         layer_gcode: String::new(),
+        pause_gcode: String::new(),
+        change_gcode: String::new(),
     }
 }
 
@@ -630,7 +634,7 @@ mod tests {
     fn presets_are_valid() {
         for p in all_printers() {
             for q in process_presets_for(&p) {
-                let s = Settings { printer: p.clone(), filament: filament_presets()[0].clone(), process: q };
+                let s = Settings { printer: p.clone(), filament: filament_presets()[0].clone(), process: q, events: vec![] };
                 assert!(s.validate().is_empty(), "{}: {:?}", p.name(), s.validate());
             }
         }

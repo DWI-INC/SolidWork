@@ -1,5 +1,6 @@
 //! SolidWork — a Creo-style parametric CAD modeller.
 pub mod app;
+pub mod apps;
 pub mod cam;
 pub mod icon;
 pub mod kernel;

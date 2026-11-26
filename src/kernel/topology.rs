@@ -1021,6 +1021,40 @@ impl Topology {
         best.get()
     }
 
+    /// The nearest hit beyond `min_t`: (t, polygon, triangle fan index k, barycentric u, v)
+    /// with the hit at `p[0] + u (p[k] − p[0]) + v (p[k+1] − p[0])`.
+    pub fn ray_hit(&self, o: V3, d: V3, min_t: f64) -> Option<(f64, usize, usize, f64, f64)> {
+        let best = std::cell::Cell::new(None::<(f64, usize, usize, f64, f64)>);
+        self.ray_accel().visit(o, d, min_t.min(0.0), || best.get().map_or(f64::INFINITY, |b| b.0), |pi| {
+            let p = &self.polys[pi];
+            for k in 1..p.len() - 1 {
+                let (a, b, c) = (self.positions[p[0]], self.positions[p[k]], self.positions[p[k + 1]]);
+                let (e1, e2) = (b - a, c - a);
+                let pv = d.cross(e2);
+                let det = e1.dot(pv);
+                if det.abs() < 1e-14 {
+                    continue;
+                }
+                let inv = 1.0 / det;
+                let s = o - a;
+                let u = s.dot(pv) * inv;
+                if !(-1e-9..=1.0 + 1e-9).contains(&u) {
+                    continue;
+                }
+                let q = s.cross(e1);
+                let v = d.dot(q) * inv;
+                if v < -1e-9 || u + v > 1.0 + 1e-9 {
+                    continue;
+                }
+                let t = e2.dot(q) * inv;
+                if t > min_t && best.get().map_or(true, |b| t < b.0) {
+                    best.set(Some((t, pi, k, u, v)));
+                }
+            }
+        });
+        best.get()
+    }
+
     /// The ray-cast box hierarchy (built once per topology).
     pub fn ray_accel(&self) -> &RayAccel {
         self.ray_accel.get_or_init(|| RayAccel::build(self))
